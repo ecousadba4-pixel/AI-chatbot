@@ -1,0 +1,10 @@
+langchain-huggingface
+torch
+loguru
+chromadb
+sentence-transformers
+langchain-chroma
+pydantic-settings
+langchain-text-splitters
+langchain-deepseek
+langchain-openai
