@@ -1,10 +1,4 @@
-langchain-huggingface
-torch
-loguru
-chromadb
+flask
+qdrant-client
 sentence-transformers
-langchain-chroma
-pydantic-settings
-langchain-text-splitters
-langchain-deepseek
-langchain-openai
+requests
