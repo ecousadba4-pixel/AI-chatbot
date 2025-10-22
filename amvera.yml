@@ -1,0 +1,10 @@
+meta:
+  environment: python
+  toolchain:
+    name: docker
+
+build:
+  dockerfile: Dockerfile
+
+run:
+  containerPort: 80
