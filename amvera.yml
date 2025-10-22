@@ -1,10 +1,12 @@
+---
+version: null
 meta:
-  environment: python
-  toolchain:
-    name: docker
-
+  environment: docker
+toolchain:
+  name: docker
+  version: latest
 build:
   dockerfile: Dockerfile
-
 run:
   containerPort: 80
+
