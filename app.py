@@ -8,13 +8,12 @@ import os
 app = Flask(__name__)
 CORS(app)  # Разрешаем внешние запросы с сайта
 
-# Настройки Qdrant и Amvera (пропишите через переменные окружения в amvera.yml)
+# Настройки Qdrant и Amvera (из переменных окружения)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "u4s-ai-chatbot-karinausadba.amvera.io")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 443))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hoteldocs")
-
-AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt")
+AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt-5")
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN", "")
 
 qdrant_client = QdrantClient(
@@ -23,6 +22,7 @@ qdrant_client = QdrantClient(
     https=True,
     api_key=QDRANT_API_KEY
 )
+
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def get_context_from_qdrant(query, top_n=3):
@@ -53,10 +53,14 @@ def amvera_gpt_query(user_question, context, token):
     try:
         response = requests.post(AMVERA_GPT_URL, headers=headers, json=payload, timeout=40)
         resp_json = response.json() if response.content else {}
-        # Пробуем разные ключи для текста модели
-        answer = (resp_json.get("content") or
-                  resp_json.get("result") or
-                  (resp_json.get("choices", [{}])[0].get("text") if resp_json.get("choices") else None))
+        # ОСНОВНОЙ ФИКС: достаем текст ответа только из нужного поля OpenAI/Amvera
+        answer = (
+            (resp_json.get("choices", [{}])[0].get("message", {}).get("content")
+                if resp_json.get("choices") else None)
+            or resp_json.get("content")
+            or resp_json.get("result")
+            or (resp_json.get("choices", [{}])[0].get("text") if resp_json.get("choices") else None)
+        )
         return answer or f"Ошибка GPT API: {response.text}"
     except Exception as e:
         print("Amvera error:", str(e))
@@ -68,15 +72,11 @@ def chat():
     question = data.get("question", "").strip()
     if not question:
         return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
-
     print(f"Вопрос пользователя: {question}")
-
     context = get_context_from_qdrant(question)
-    print(f"Контекст: {context[:120]}...")  # для отладки
-
+    print(f"Контекст: {context[:120]}...") # для отладки
     answer = amvera_gpt_query(question, context, AMVERA_GPT_TOKEN)
-    print(f"Ответ: {answer[:120]}...")      # для отладки
-
+    print(f"Ответ: {answer[:120]}...") # для отладки
     return jsonify({"answer": answer}), 200
 
 @app.route("/health", methods=["GET"])
@@ -85,5 +85,7 @@ def health_check():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 80)))
+
+
 
 
