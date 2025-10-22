@@ -5,9 +5,10 @@ WORKDIR /app
 
 # Копируем зависимости и устанавливаем
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
 
-# Копируем код приложения
+# Копируем весь код приложения
 COPY . .
 
 # Открываем порт 80 (Amvera ожидает порт 80)
