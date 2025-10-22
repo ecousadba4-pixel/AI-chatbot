@@ -15,4 +15,4 @@ COPY . .
 EXPOSE 80
 
 # Запуск через gunicorn для продакшена
-CMD ["gunicorn", "--bind", "0.0.0.0:80", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:${PORT}", "--timeout", "120", "app:app"]
