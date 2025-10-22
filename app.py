@@ -1,12 +1,14 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 import os
 
 app = Flask(__name__)
+CORS(app)  # Разрешаем внешние запросы с сайта
 
-# Настройки Qdrant и GPT-5 (через Amvera)
+# Настройки Qdrant и Amvera (пропишите через переменные окружения в amvera.yml)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "u4s-ai-chatbot-karinausadba.amvera.io")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 443))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
@@ -24,14 +26,18 @@ qdrant_client = QdrantClient(
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def get_context_from_qdrant(query, top_n=3):
-    vec = embedding_model.encode(query).tolist()
-    results = qdrant_client.search(
-        collection_name=COLLECTION_NAME,
-        query_vector=vec,
-        limit=top_n
-    )
-    context = " ".join(hit.payload.get("text", "") for hit in results)
-    return context
+    try:
+        vec = embedding_model.encode(query).tolist()
+        results = qdrant_client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=vec,
+            limit=top_n
+        )
+        context = " ".join(hit.payload.get("text", "") for hit in results)
+        return context or "Нет подходящих документов."
+    except Exception as e:
+        print("Qdrant error:", str(e))
+        return ""
 
 def amvera_gpt_query(user_question, context, token):
     payload = {
@@ -44,31 +50,34 @@ def amvera_gpt_query(user_question, context, token):
         "X-Auth-Token": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    response = requests.post(AMVERA_GPT_URL, headers=headers, json=payload)
-    if response.status_code == 200:
-        # В зависимости от актуального респонса Amvera, ответ может быть в .json()['result'] либо .json()['choices'][0]['text']
-        resp_json = response.json()
-        # Пример для нового API:
-        if "content" in resp_json:
-            return resp_json["content"]
-        if "result" in resp_json:
-            return resp_json["result"]
-        if "choices" in resp_json and resp_json["choices"]:
-            return resp_json["choices"][0].get("text", "Ответ не получен")
-        return resp_json
-    else:
-        return f"Ошибка GPT API: {response.text}"
+    try:
+        response = requests.post(AMVERA_GPT_URL, headers=headers, json=payload, timeout=40)
+        resp_json = response.json() if response.content else {}
+        # Пробуем разные ключи для текста модели
+        answer = (resp_json.get("content") or
+                  resp_json.get("result") or
+                  (resp_json.get("choices", [{}])[0].get("text") if resp_json.get("choices") else None))
+        return answer or f"Ошибка GPT API: {response.text}"
+    except Exception as e:
+        print("Amvera error:", str(e))
+        return "Ошибка ответа от сервера."
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    data = request.get_json()
-    question = data.get("question", "")
+    data = request.get_json(force=True)
+    question = data.get("question", "").strip()
     if not question:
-        return jsonify({"error": "Некорректный запрос"}), 400
+        return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
+
+    print(f"Вопрос пользователя: {question}")
 
     context = get_context_from_qdrant(question)
+    print(f"Контекст: {context[:120]}...")  # для отладки
+
     answer = amvera_gpt_query(question, context, AMVERA_GPT_TOKEN)
-    return jsonify({"answer": answer})
+    print(f"Ответ: {answer[:120]}...")      # для отладки
+
+    return jsonify({"answer": answer}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -76,3 +85,4 @@ def health_check():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
+
