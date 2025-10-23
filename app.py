@@ -4,17 +4,15 @@ import requests
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 import os
-from functools import lru_cache
 
 app = Flask(__name__)
 CORS(app)
 
-# --- Конфигурация ---
 QDRANT_HOST = os.getenv("QDRANT_HOST", "u4s-ai-chatbot-karinausadba.amvera.io")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 443))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hotel_docs")
-AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt-5")
+AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL", "")
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN", "")
 
 qdrant_client = QdrantClient(
@@ -24,10 +22,8 @@ qdrant_client = QdrantClient(
     api_key=QDRANT_API_KEY
 )
 
-# Используем русскоязычную SBERT модель!
-embedding_model = SentenceTransformer("sberbank-ai/sbert_large_nlu_ru")
+embedding_model = SentenceTransformer("ai-forever/FRIDA")
 
-# --- Получение контекста из Qdrant ---
 def get_context_from_qdrant(query, top_n=5):
     try:
         vec = embedding_model.encode(query).tolist()
@@ -43,7 +39,6 @@ def get_context_from_qdrant(query, top_n=5):
         print("Qdrant error:", str(e))
         return ""
 
-# --- Запрос к GPT-модели ---
 def amvera_gpt_query(user_question, context, token):
     payload = {
         "model": "gpt-5",
@@ -53,9 +48,7 @@ def amvera_gpt_query(user_question, context, token):
                 "text": (
                     "Ты чат-бот отеля. "
                     "Отвечай только по фактам из Qdrant ниже. "
-                    "Если данных нет — ответь, что информации нет. "
-                    "Не придумывай и не давай советы. "
-                    "Ответ — не больше 3 предложений или пунктов."
+                    "Если данных нет — ответь, что информации нет."
                 ),
             },
             {
@@ -82,15 +75,13 @@ def amvera_gpt_query(user_question, context, token):
         print("Amvera error:", str(e))
         return "Ошибка ответа от сервера."
 
-# --- Flask endpoint ---
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(force=True)
     question = data.get("question", "").strip()
     if not question:
         return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
-    print(f"Вопрос пользователя: {question}")
-    context = get_context_from_qdrant(question, top_n=5)  # Возвращаем больше контекста!
+    context = get_context_from_qdrant(question, top_n=5)
     answer = amvera_gpt_query(question, context, AMVERA_GPT_TOKEN)
     print(f"Ответ GPT: {answer[:300]}")
     return jsonify({"answer": answer}), 200
@@ -101,4 +92,5 @@ def health_check():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
