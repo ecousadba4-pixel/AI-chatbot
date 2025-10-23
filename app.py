@@ -7,6 +7,7 @@ import hashlib
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 import json
+import time
 
 from price_dialog import handle_price_dialog  # твой модуль работы с Shelter Cloud
 
@@ -15,7 +16,7 @@ CORS(app)
 
 # ==== ENVIRONMENT VARIABLES ====
 QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 80))
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))   # порт Qdrant внутри Amvera — всегда 6333!
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hotel_docs")
 
@@ -24,13 +25,14 @@ AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN", "")
 
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+# Не прописывай password, если REDIS_PASSWORD не задан!
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 
 # ================= REDIS (3 дня) =================
 redis_client = redis.Redis(
     host=REDIS_HOST,
     port=REDIS_PORT,
-    password=REDIS_PASSWORD,
+    password=REDIS_PASSWORD if REDIS_PASSWORD else None,
     decode_responses=True
 )
 
@@ -52,14 +54,16 @@ def cached_gpt_response(prompt, context, token, expire=259200):  # 3 дня
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
-    https=False,  # Для внутреннего домена только HTTP!
+    https=False,  # Внутренний адрес — только http!
     api_key=QDRANT_API_KEY
 )
 embedding_model = SentenceTransformer("sergeyzh/rubert-mini-frida")
 
 def get_context_from_qdrant(query, top_n=5):
     try:
+        t0 = time.time()
         vec = embedding_model.encode(query).tolist()
+        print("Embedding time:", time.time()-t0)
         results = qdrant_client.search(
             collection_name=COLLECTION_NAME,
             query_vector=vec,
@@ -104,6 +108,24 @@ def amvera_gpt_query(user_question, context, token):
     except Exception as e:
         return f"Ошибка GPT API: {str(e)}"
 
+# ====== Улучшенная логика определения сценариев ======
+def is_booking_request(text):
+    booking_triggers = [
+        "забронировать номер",
+        "бронь номера",
+        "бронирование номера",
+        "снять номер",
+        "освободить номер"
+    ]
+    ignore_phrases = [
+        "еда", "доставка", "завтрак", "ужин", "обед", "заказать еду", "меню", "напитки",
+        "room service", "доставка еды", "ужин в номер", "заказать питьевую воду", "чайник"
+    ]
+    lower = text.lower()
+    if any(p in lower for p in ignore_phrases):
+        return False
+    return any(p in lower for p in booking_triggers)
+
 # ================= ROUTES =======================
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -114,12 +136,11 @@ def chat():
     if not user_input:
         return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
 
-    # Проверка сценария бронирования (Shelter Cloud)
-    dialog_response = handle_price_dialog(user_id, user_input)
-    if dialog_response:
-        return jsonify(dialog_response), 200
+    if is_booking_request(user_input):
+        dialog_response = handle_price_dialog(user_id, user_input)
+        if dialog_response:
+            return jsonify(dialog_response), 200
 
-    # Qdrant + GPT с кэшем
     context = get_context_from_qdrant(user_input, top_n=5)
     answer = cached_gpt_response(user_input, context, AMVERA_GPT_TOKEN)
     return jsonify({"answer": answer, "mode": "info"}), 200
@@ -130,4 +151,3 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
