@@ -6,15 +6,16 @@ import redis
 import hashlib
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
+import json
 
-from price_dialog import handle_price_dialog  # модуль диалога с Shelter API
+from price_dialog import handle_price_dialog  # твой модуль работы с Shelter Cloud
 
 app = Flask(__name__)
 CORS(app)
 
-# ================= ENV ========================
-QDRANT_HOST = os.getenv("QDRANT_HOST", "u4s-ai-chatbot-karinausadba.amvera.io")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 443))
+# ==== ENVIRONMENT VARIABLES ====
+QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", 80))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hotel_docs")
 
@@ -25,7 +26,7 @@ REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
-# ================= REDIS =======================
+# ================= REDIS (3 дня) =================
 redis_client = redis.Redis(
     host=REDIS_HOST,
     port=REDIS_PORT,
@@ -38,7 +39,7 @@ def make_gpt_cache_key(prompt, context):
     key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"gpt:{key}"
 
-def cached_gpt_response(prompt, context, token, expire=259200):  # 3 дня (в секундах)
+def cached_gpt_response(prompt, context, token, expire=259200):  # 3 дня
     cache_key = make_gpt_cache_key(prompt, context)
     cached = redis_client.get(cache_key)
     if cached:
@@ -47,14 +48,13 @@ def cached_gpt_response(prompt, context, token, expire=259200):  # 3 дня (в 
     redis_client.setex(cache_key, expire, answer)
     return answer
 
-# ================= Qdrant ======================
+# ================= QDRANT =======================
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
-    https=True,
+    https=False,  # Для внутреннего домена только HTTP!
     api_key=QDRANT_API_KEY
 )
-
 embedding_model = SentenceTransformer("sergeyzh/rubert-mini-frida")
 
 def get_context_from_qdrant(query, top_n=5):
@@ -66,11 +66,11 @@ def get_context_from_qdrant(query, top_n=5):
             limit=top_n
         )
         context = " ".join(hit.payload.get("text", "") for hit in results)
-        return context or "Нет подходящих документов."
+        return context if context.strip() else "Нет подходящих документов."
     except Exception as e:
         return f"Ошибка при получении контекста от Qdrant: {str(e)}"
 
-# ================= GPT =========================
+# ================= GPT ==========================
 def amvera_gpt_query(user_question, context, token):
     payload = {
         "model": "gpt-5",
@@ -79,8 +79,8 @@ def amvera_gpt_query(user_question, context, token):
                 "role": "system",
                 "text": (
                     "Ты чат-бот отеля. "
-                    "Отвечай кратко и по сути на основе контекста. "
-                    "Если ответа нет — сообщай, что данных нет."
+                    "Отвечай кратко и только по контексту. "
+                    "Если данных нет — сообщай, что информации нет."
                 ),
             },
             {
@@ -102,9 +102,9 @@ def amvera_gpt_query(user_question, context, token):
         ) or data.get("content") or "Ответ не получен."
         return answer
     except Exception as e:
-        return f"Ошибка при обращении к Amvera GPT API: {str(e)}"
+        return f"Ошибка GPT API: {str(e)}"
 
-# ================= ROUTES ======================
+# ================= ROUTES =======================
 @app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json(force=True)
@@ -112,14 +112,14 @@ def chat():
     user_id = payload.get("session_id", "anon")
 
     if not user_input:
-        return jsonify({"answer": "Пожалуйста, введите вопрос."}), 200
+        return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
 
-    # 1. Проверяем, не сценарий ли это бронирования (Shelter)
+    # Проверка сценария бронирования (Shelter Cloud)
     dialog_response = handle_price_dialog(user_id, user_input)
     if dialog_response:
         return jsonify(dialog_response), 200
 
-    # 2. GPT-логика с контекстом и кэшированием
+    # Qdrant + GPT с кэшем
     context = get_context_from_qdrant(user_input, top_n=5)
     answer = cached_gpt_response(user_input, context, AMVERA_GPT_TOKEN)
     return jsonify({"answer": answer, "mode": "info"}), 200
@@ -130,3 +130,4 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
