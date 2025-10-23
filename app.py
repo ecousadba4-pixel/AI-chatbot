@@ -7,7 +7,7 @@ import hashlib
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from price_dialog import handle_price_dialog  # твоя логика для Shelter
+from price_dialog import handle_price_dialog  # модуль диалога с Shelter API
 
 app = Flask(__name__)
 CORS(app)
@@ -38,7 +38,7 @@ def make_gpt_cache_key(prompt, context):
     key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"gpt:{key}"
 
-def cached_gpt_response(prompt, context, token, expire=3600):
+def cached_gpt_response(prompt, context, token, expire=259200):  # 3 дня (в секундах)
     cache_key = make_gpt_cache_key(prompt, context)
     cached = redis_client.get(cache_key)
     if cached:
@@ -54,6 +54,7 @@ qdrant_client = QdrantClient(
     https=True,
     api_key=QDRANT_API_KEY
 )
+
 embedding_model = SentenceTransformer("sergeyzh/rubert-mini-frida")
 
 def get_context_from_qdrant(query, top_n=5):
@@ -67,7 +68,7 @@ def get_context_from_qdrant(query, top_n=5):
         context = " ".join(hit.payload.get("text", "") for hit in results)
         return context or "Нет подходящих документов."
     except Exception as e:
-        return f"Ошибка при получении контекста: {str(e)}"
+        return f"Ошибка при получении контекста от Qdrant: {str(e)}"
 
 # ================= GPT =========================
 def amvera_gpt_query(user_question, context, token):
@@ -78,9 +79,8 @@ def amvera_gpt_query(user_question, context, token):
                 "role": "system",
                 "text": (
                     "Ты чат-бот отеля. "
-                    "Отвечай только на основе контекста. "
-                    "Если данных нет — напиши, что информации нет. "
-                    "Отвечай кратко."
+                    "Отвечай кратко и по сути на основе контекста. "
+                    "Если ответа нет — сообщай, что данных нет."
                 ),
             },
             {
@@ -102,23 +102,24 @@ def amvera_gpt_query(user_question, context, token):
         ) or data.get("content") or "Ответ не получен."
         return answer
     except Exception as e:
-        return f"Ошибка GPT API: {str(e)}"
+        return f"Ошибка при обращении к Amvera GPT API: {str(e)}"
 
 # ================= ROUTES ======================
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    user_input = request.get_json(force=True).get("question", "").strip()
-    user_id = request.get_json(force=True).get("session_id", "anon")
+    payload = request.get_json(force=True)
+    user_input = payload.get("question", "").strip()
+    user_id = payload.get("session_id", "anon")
 
     if not user_input:
-        return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
+        return jsonify({"answer": "Пожалуйста, введите вопрос."}), 200
 
-    # 1. Проверка на расчет стоимости через Shelter (сценарий бронирования)
+    # 1. Проверяем, не сценарий ли это бронирования (Shelter)
     dialog_response = handle_price_dialog(user_id, user_input)
     if dialog_response:
         return jsonify(dialog_response), 200
 
-    # 2. Ответ через Qdrant + GPT (с кешем)
+    # 2. GPT-логика с контекстом и кэшированием
     context = get_context_from_qdrant(user_input, top_n=5)
     answer = cached_gpt_response(user_input, context, AMVERA_GPT_TOKEN)
     return jsonify({"answer": answer, "mode": "info"}), 200
