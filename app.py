@@ -8,6 +8,7 @@ import os
 app = Flask(__name__)
 CORS(app)
 
+# ENV-переменные Amvera
 QDRANT_HOST = os.getenv("QDRANT_HOST", "u4s-ai-chatbot-karinausadba.amvera.io")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 443))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
@@ -15,6 +16,7 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hotel_docs")
 AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL", "")
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN", "")
 
+# Подключение к Qdrant и модели
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
@@ -22,7 +24,8 @@ qdrant_client = QdrantClient(
     api_key=QDRANT_API_KEY
 )
 
-embedding_model = SentenceTransformer("ai-forever/FRIDA")
+# Используем лёгкую модель rubert-mini-frida
+embedding_model = SentenceTransformer("sergeyzh/rubert-mini-frida")
 
 def get_context_from_qdrant(query, top_n=5):
     try:
@@ -33,11 +36,11 @@ def get_context_from_qdrant(query, top_n=5):
             limit=top_n
         )
         context = " ".join(hit.payload.get("text", "") for hit in results)
-        print(f"\n====== Контекст для GPT ======\n{context}\n=============================\n")
+        print(f"\n====== Контекст для GPT ======\n{context[:500]}\n=============================\n")
         return context or "Нет подходящих документов."
     except Exception as e:
-        print("Qdrant error:", str(e))
-        return ""
+        print("Ошибка Qdrant:", str(e))
+        return "Ошибка при получении контекста."
 
 def amvera_gpt_query(user_question, context, token):
     payload = {
@@ -47,13 +50,13 @@ def amvera_gpt_query(user_question, context, token):
                 "role": "system",
                 "text": (
                     "Ты чат-бот отеля. "
-                    "Отвечай только по фактам из Qdrant ниже. "
-                    "Если данных нет — ответь, что информации нет."
+                    "Отвечай только на основе контекста. "
+                    "Если данных нет — напиши, что информации нет."
                 ),
             },
             {
                 "role": "user",
-                "text": f"Контекст:\n{context}\n\nВопрос гостя: {user_question}",
+                "text": f"Контекст:\n{context}\n\nВопрос: {user_question}",
             },
         ],
     }
@@ -63,34 +66,31 @@ def amvera_gpt_query(user_question, context, token):
     }
     try:
         response = requests.post(AMVERA_GPT_URL, headers=headers, json=payload, timeout=40)
-        resp_json = response.json() if response.content else {}
+        data = response.json() if response.content else {}
         answer = (
-            resp_json.get("choices", [{}])[0].get("message", {}).get("content")
-            if resp_json.get("choices") else None
-        ) or resp_json.get("content") or resp_json.get("result") or (
-            resp_json.get("choices", [{}])[0].get("text") if resp_json.get("choices") else None
-        )
-        return answer or f"Ошибка GPT API: {response.text}"
+            data.get("choices", [{}])[0].get("message", {}).get("content")
+            if data.get("choices") else None
+        ) or data.get("content") or "Ответ не получен."
+        return answer
     except Exception as e:
-        print("Amvera error:", str(e))
-        return "Ошибка ответа от сервера."
+        return f"Ошибка GPT API: {str(e)}"
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    data = request.get_json(force=True)
-    question = data.get("question", "").strip()
-    if not question:
+    user_input = request.get_json(force=True).get("question", "")
+    if not user_input:
         return jsonify({"answer": "Пожалуйста, задайте вопрос."}), 200
-    context = get_context_from_qdrant(question, top_n=5)
-    answer = amvera_gpt_query(question, context, AMVERA_GPT_TOKEN)
+    context = get_context_from_qdrant(user_input, top_n=5)
+    answer = amvera_gpt_query(user_input, context, AMVERA_GPT_TOKEN)
     print(f"Ответ GPT: {answer[:300]}")
     return jsonify({"answer": answer}), 200
 
 @app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "ok"})
+def health():
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
 
 
