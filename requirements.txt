@@ -3,6 +3,4 @@ flask_cors
 requests
 qdrant-client
 sentence-transformers
-transformers
 gunicorn
-python-dotenv
