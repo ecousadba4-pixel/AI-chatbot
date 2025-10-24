@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # ------------------------
-# System dependencies (для Debian 12/13)
+# SYSTEM DEPENDENCIES (Debian 13 Trixie)
 # ------------------------
 RUN apt-get clean && apt-get update -y && apt-get install -y --no-install-recommends \
     build-essential \
@@ -17,19 +17,25 @@ RUN apt-get clean && apt-get update -y && apt-get install -y --no-install-recomm
     curl \
     libglib2.0-0 \
     libgl1 \
+    libelf1t64 \
+    liberror-perl \
+    libexpat1 \
+    libgbm1 \
+    libgcc-14-dev \
+    libgdbm-compat4t64 \
     libstdc++6 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 # ------------------------
-# Python dependencies
+# PYTHON DEPENDENCIES
 # ------------------------
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
 # ------------------------
-# Copy project and expose port
+# COPY PROJECT
 # ------------------------
 COPY . .
 
