@@ -1,6 +1,3 @@
-# ------------------------
-# Base image
-# ------------------------
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -11,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # ------------------------
-# Системные зависимости
+# System dependencies (для Debian 12/13)
 # ------------------------
 RUN apt-get clean && apt-get update -y && apt-get install -y --no-install-recommends \
     build-essential \
@@ -19,26 +16,22 @@ RUN apt-get clean && apt-get update -y && apt-get install -y --no-install-recomm
     wget \
     curl \
     libglib2.0-0 \
-    libgl1-mesa-glx \
+    libgl1 \
     libstdc++6 \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 # ------------------------
-# Python deps
+# Python dependencies
 # ------------------------
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
 # ------------------------
-# Copy project
+# Copy project and expose port
 # ------------------------
 COPY . .
 
 EXPOSE 8000
-
-# ------------------------
-# Start app
-# ------------------------
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--timeout", "180", "app:app"]
