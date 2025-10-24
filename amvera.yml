@@ -1,12 +1,15 @@
 ---
-version: null
+version: 2.0
+
 meta:
   environment: docker
+
 toolchain:
   name: docker
   version: latest
+
 build:
   dockerfile: Dockerfile
-run:
-  containerPort: 80
 
+run:
+  containerPort: 8000
