@@ -18,7 +18,8 @@ COLLECTION_NAME = "chat_sessions"
 client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
-    api_key=QDRANT_API_KEY
+    api_key=QDRANT_API_KEY,
+    https=False  # очень важно в Amvera
 )
 
 # Проверка и создание коллекции
