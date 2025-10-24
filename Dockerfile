@@ -1,44 +1,38 @@
-# ------------------------
-# Dockerfile (optimized for RAG chatbot)
-# ------------------------
+# ---------- Базовый слой ----------
+FROM python:3.11-slim
 
-# Этап 1 — базовый слой с Python
-FROM python:3.11-slim as base
-
-# Настройка окружения
+# Переменные окружения
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     LANG=C.UTF-8 \
     PIP_NO_CACHE_DIR=1
 
-# Рабочая директория
 WORKDIR /app
 
-# Установка системных пакетов (для numpy и sentence-transformers)
+# ---------- Устанавливаем зависимости системы ----------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     wget \
+    curl \
     libglib2.0-0 \
     libgl1-mesa-glx \
+    libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 
-# Копируем зависимости
+# ---------- Копируем requirements и проект ----------
 COPY requirements.txt .
 
-# Установка зависимостей Python
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel
 
-# Копируем всё приложение
+# ---------- Установка библиотек Python ----------
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
-# ------------------------
-# Этап 2 — продакшеновый слой
-# ------------------------
-FROM base as production
-
-# Открываем порт
+# ---------- Экспонируем порт ----------
 EXPOSE 8000
 
-# Команда запуска Gunicorn
-CMD ["gunicorn", "-c", "gunicorn.config.py", "app:app"]
+# ---------- Команда запуска ----------
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--timeout", "180", "app:app"]
+
