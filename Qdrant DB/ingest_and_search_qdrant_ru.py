@@ -31,6 +31,7 @@ CLI:
 """
 
 import os
+import sys
 import json
 import argparse
 import uuid
@@ -49,6 +50,19 @@ from qdrant_client.http.models import (
     Filter, FieldCondition, MatchValue
 )
 from qdrant_client.http.exceptions import UnexpectedResponse
+
+# Ensure local executions can import shared helpers irrespective of the entrypoint location.
+_HERE = Path(__file__).resolve().parent
+for candidate in [_HERE, *_HERE.parents]:
+    helper = candidate / "embedding_loader.py"
+    if helper.exists():
+        if str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+        break
+else:
+    raise ImportError(
+        "Не удалось найти embedding_loader.py рядом со скриптом; проверь структуру репозитория."
+    )
 
 from embedding_loader import resolve_embedding_model
 
