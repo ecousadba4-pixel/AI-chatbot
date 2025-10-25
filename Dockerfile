@@ -22,12 +22,10 @@ COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
-# Предзагрузка ТОЙ ЖЕ модели, что в app.py (1024-мерные эмбеддинги)
-# ВАЖНО: heredoc — отдельные строки PY/код/PY
-RUN python - <<'PY'
-from sentence_transformers import SentenceTransformer
-SentenceTransformer('sberbank-ai/sbert_large_nlu_ru')
-PY
+# Базовые утилиты и прогрев модели (если веса уже на месте)
+COPY embedding_loader.py ./embedding_loader.py
+COPY tools ./tools
+RUN python -m tools.preload_model
 
 # Код приложения
 COPY . .
@@ -40,4 +38,3 @@ EXPOSE 8000
 
 # Запуск (gunicorn.config.py уже есть)
 CMD ["gunicorn", "--config", "gunicorn.config.py", "app:app"]
-
