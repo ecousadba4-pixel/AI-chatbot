@@ -178,9 +178,10 @@ if not _HELPER_IMPORTED:
 BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "processed"
 
-# Модель эмбеддингов — ваша
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sberbank-ai/sbert_large_nlu_ru")
-EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH")
+# Модель эмбеддингов берём только из фиксированного локального пути
+FIXED_EMBEDDING_MODEL_PATH = os.path.normpath(r"C:\models\sbert_large_nlu_ru")
+EMBEDDING_MODEL_NAME = FIXED_EMBEDDING_MODEL_PATH
+EMBEDDING_MODEL_PATH = FIXED_EMBEDDING_MODEL_PATH
 
 
 def _as_bool(value: Optional[str], default: bool = True) -> bool:
@@ -189,11 +190,7 @@ def _as_bool(value: Optional[str], default: bool = True) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
-ALLOW_EMBEDDING_DOWNLOAD = _as_bool(os.getenv("ALLOW_EMBEDDING_DOWNLOAD"), default=False)
-hf_local_only = os.getenv("HF_LOCAL_ONLY")
-if hf_local_only is not None:
-    # Совместимость с прежней переменной окружения
-    ALLOW_EMBEDDING_DOWNLOAD = not _as_bool(hf_local_only, default=True)
+ALLOW_EMBEDDING_DOWNLOAD = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Загрузка .env и сборка QDRANT_URL
@@ -231,46 +228,19 @@ _ENCODER_SINGLETON = None  # кэш энкодера
 
 
 def _candidate_model_paths(model_name: str) -> list[str]:
-    parts = Path(*model_name.split("/"))
-    base_dirs = [
-        BASE_DIR / "Data",
-        BASE_DIR / "data",
-        BASE_DIR.parent / "Data",
-        BASE_DIR.parent / "data",
-        Path("/app/Data"),
-        Path("/app/data"),
-        Path("/data"),
-        Path("C:/models"),
-        Path("D:/models"),
-        Path.home() / "models",
-    ]
+    """Возвращаем только фиксированный путь к локальной модели."""
 
-    raw_candidates: list[Any] = [
-        EMBEDDING_MODEL_PATH,
-        os.getenv("HF_MODEL_LOCAL_DIR"),
-        os.getenv("EMBEDDING_MODEL_DIR"),
-    ]
-
-    for base in base_dirs:
-        raw_candidates.append(base / parts)
-        raw_candidates.append(base / parts.name)
-
-    seen: set[str] = set()
-    result: list[str] = []
-    for candidate in raw_candidates:
-        if not candidate:
-            continue
-        expanded = os.path.expanduser(os.path.expandvars(os.fspath(candidate)))
-        if expanded in seen:
-            continue
-        seen.add(expanded)
-        result.append(expanded)
-    return result
+    return [EMBEDDING_MODEL_PATH]
 
 
 def get_encoder():
     global _ENCODER_SINGLETON
     if _ENCODER_SINGLETON is None:
+        if not os.path.exists(EMBEDDING_MODEL_PATH):
+            raise FileNotFoundError(
+                "Локальная модель эмбеддингов не найдена. "
+                "Ожидался путь C\\models\\sbert_large_nlu_ru."
+            )
         candidates = _candidate_model_paths(EMBEDDING_MODEL_NAME)
         _ENCODER_SINGLETON = resolve_embedding_model(
             model_name=EMBEDDING_MODEL_NAME,
@@ -278,7 +248,10 @@ def get_encoder():
             allow_download=ALLOW_EMBEDDING_DOWNLOAD,
         )
         dim = _ENCODER_SINGLETON.get_sentence_embedding_dimension()
-        print(f"[Encoder] Загружена модель: {EMBEDDING_MODEL_NAME} (dim={dim})")
+        print(
+            f"[Encoder] Загружена модель из {EMBEDDING_MODEL_PATH} "
+            f"(dim={dim})"
+        )
     return _ENCODER_SINGLETON
 
 # ─────────────────────────────────────────────────────────────────────────────
