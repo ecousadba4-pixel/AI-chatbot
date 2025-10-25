@@ -60,30 +60,59 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 # Список коллекций, по которым ищем
 def _load_collections() -> list[str]:
     """Определение списка коллекций для поиска с учётом переменных окружения."""
+
     env_json = os.getenv("COLLECTIONS_JSON")
     if env_json:
         try:
             parsed = json.loads(env_json)
-            if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
-                return _normalize_collection_names(parsed)
         except json.JSONDecodeError:
-            print("⚠️ COLLECTIONS_JSON не удалось распарсить как JSON — будет использован fallback")
+            print(
+                "⚠️ COLLECTIONS_JSON не удалось распарсить как JSON — будет использован fallback",
+                f"(значение: {env_json!r})",
+            )
+        else:
+            if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+                normalized = _normalize_collection_names(parsed)
+                print(
+                    "🔧 Источник коллекций: COLLECTIONS_JSON →",
+                    ", ".join(normalized) or "<пусто>",
+                )
+                return normalized
+            print(
+                "⚠️ COLLECTIONS_JSON должно быть списком строк — будет использован fallback",
+                f"(значение: {parsed!r})",
+            )
 
-    single_collection = (
-        os.getenv("QDRANT_COLLECTION")
-        or os.getenv("COLLECTION_NAME")
-    )
+    qdrant_collection = os.getenv("QDRANT_COLLECTION")
+    collection_name = os.getenv("COLLECTION_NAME")
+    single_collection = qdrant_collection or collection_name
     if single_collection:
-        return _normalize_collection_names([single_collection])
+        source = "QDRANT_COLLECTION" if qdrant_collection else "COLLECTION_NAME"
+        normalized = _normalize_collection_names([single_collection])
+        print(
+            f"🔧 Источник коллекций: {source} →",
+            ", ".join(normalized) or "<пусто>",
+        )
+        return normalized
 
     comma_separated = os.getenv("COLLECTIONS")
     if comma_separated:
         items = [item.strip() for item in comma_separated.split(",") if item.strip()]
         if items:
-            return _normalize_collection_names(items)
+            normalized = _normalize_collection_names(items)
+            print(
+                "🔧 Источник коллекций: COLLECTIONS →",
+                ", ".join(normalized) or "<пусто>",
+            )
+            return normalized
 
     # Значения по умолчанию (актуальная единая коллекция)
-    return _normalize_collection_names(DEFAULT_COLLECTIONS)
+    normalized = _normalize_collection_names(DEFAULT_COLLECTIONS)
+    print(
+        "🔧 Источник коллекций: значение по умолчанию →",
+        ", ".join(normalized) or "<пусто>",
+    )
+    return normalized
 
 
 COLLECTIONS = _load_collections()
