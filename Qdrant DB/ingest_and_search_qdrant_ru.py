@@ -53,18 +53,128 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 # Ensure local executions can import shared helpers irrespective of the entrypoint location.
 _HERE = Path(__file__).resolve().parent
+_HELPER_IMPORTED = False
 for candidate in [_HERE, *_HERE.parents]:
     helper = candidate / "embedding_loader.py"
     if helper.exists():
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
-        break
-else:
-    raise ImportError(
-        "Не удалось найти embedding_loader.py рядом со скриптом; проверь структуру репозитория."
-    )
+        try:
+            from embedding_loader import resolve_embedding_model  # type: ignore
+        except Exception:
+            continue
+        else:
+            _HELPER_IMPORTED = True
+            break
 
-from embedding_loader import resolve_embedding_model
+if not _HELPER_IMPORTED:
+    # Fallback: provide a minimal inline resolver so the script remains usable
+    # when embedding_loader.py is not bundled together with the script
+    # (например, при ручном копировании ingest_and_search_qdrant_ru.py).
+    from sentence_transformers import SentenceTransformer
+
+    def _expand_candidate_paths(
+        candidate_paths: Optional[Iterable[Optional[str]]],
+    ) -> list[str]:
+        """Фильтруем и расширяем кандидаты путей, оставляя существующие."""
+
+        if not candidate_paths:
+            return []
+
+        paths: list[str] = []
+        seen: set[str] = set()
+        for raw in candidate_paths:
+            if not raw:
+                continue
+            expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+            if not os.path.exists(expanded):
+                continue
+            if expanded in seen:
+                continue
+            seen.add(expanded)
+            paths.append(expanded)
+        return paths
+
+    def _default_model_search_paths(model_name: str) -> list[str]:
+        """Дополнительные директории для поиска локальной модели."""
+
+        model_relative = Path(*model_name.split("/"))
+        search_roots: list[Path] = []
+
+        for env_var in ("EMBEDDING_MODEL_DIR", "APP_DATA_DIR", "DATA_DIR"):
+            env_path = os.getenv(env_var)
+            if env_path:
+                search_roots.append(Path(env_path))
+
+        search_roots.extend(
+            [
+                _HERE / "Data",
+                _HERE / "data",
+                _HERE.parent / "Data",
+                _HERE.parent / "data",
+                Path("/app/Data"),
+                Path("/app/data"),
+                Path("/data"),
+                Path("C:/models"),
+                Path("D:/models"),
+                Path.home() / "models",
+            ]
+        )
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for root in search_roots:
+            for suffix in (model_relative, Path(model_relative.name)):
+                candidate = root / suffix
+                candidate_str = os.fspath(candidate)
+                if candidate_str in seen:
+                    continue
+                seen.add(candidate_str)
+                candidates.append(candidate_str)
+        return candidates
+
+    def resolve_embedding_model(
+        model_name: str,
+        candidate_paths: Optional[Iterable[Optional[str]]] = None,
+        *,
+        allow_download: bool = True,
+    ):
+        """Минимальный загрузчик модели эмбеддингов.
+
+        Сначала пробует локальные пути (если указаны), иначе скачивает модель
+        по имени через SentenceTransformer. Поведение соответствует прежнему
+        вспомогательному модулю, но без расширенного поиска.
+        """
+
+        search_candidates: list[str] = []
+        search_candidates.extend(_expand_candidate_paths(candidate_paths))
+        search_candidates.extend(
+            _expand_candidate_paths(_default_model_search_paths(model_name))
+        )
+
+        for path in search_candidates:
+            try:
+                model = SentenceTransformer(path)
+                setattr(model, "_resolved_from", path)
+                return model
+            except Exception:
+                continue
+
+        if not allow_download:
+            searched = (
+                "\n".join(f" - {p}" for p in search_candidates)
+                or " - (список путей пуст)"
+            )
+            raise FileNotFoundError(
+                "Не удалось найти локальную модель эмбеддингов. Укажите переменную окружения "
+                "EMBEDDING_MODEL_PATH (или другие пути) и убедитесь, что модель располагается "
+                "в одном из следующих путей:\n"
+                f"{searched}"
+            )
+
+        model = SentenceTransformer(model_name)
+        setattr(model, "_resolved_from", model_name)
+        return model
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Конфигурация путей и коллекции
@@ -124,20 +234,66 @@ COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hot
 _ENCODER_SINGLETON = None  # кэш энкодера
 
 
+def _candidate_model_paths(model_name: str) -> list[str]:
+    parts = Path(*model_name.split("/"))
+    base_dirs = [
+        BASE_DIR / "Data",
+        BASE_DIR / "data",
+        BASE_DIR.parent / "Data",
+        BASE_DIR.parent / "data",
+        Path("/app/Data"),
+        Path("/app/data"),
+        Path("/data"),
+        Path("C:/models"),
+        Path("D:/models"),
+        Path.home() / "models",
+    ]
+
+    raw_candidates: list[Any] = [
+        EMBEDDING_MODEL_PATH,
+        os.getenv("HF_MODEL_LOCAL_DIR"),
+        os.getenv("EMBEDDING_MODEL_DIR"),
+    ]
+
+    for base in base_dirs:
+        raw_candidates.append(base / parts)
+        raw_candidates.append(base / parts.name)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for candidate in raw_candidates:
+        if not candidate:
+            continue
+        expanded = os.path.expanduser(os.path.expandvars(os.fspath(candidate)))
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        result.append(expanded)
+    return result
+
+
 def get_encoder():
     global _ENCODER_SINGLETON
     if _ENCODER_SINGLETON is None:
-        candidates = [
-            EMBEDDING_MODEL_PATH,
-            os.getenv("HF_MODEL_LOCAL_DIR"),
-        ]
+        candidates = _candidate_model_paths(EMBEDDING_MODEL_NAME)
         _ENCODER_SINGLETON = resolve_embedding_model(
             model_name=EMBEDDING_MODEL_NAME,
             candidate_paths=candidates,
             allow_download=ALLOW_EMBEDDING_DOWNLOAD,
         )
         dim = _ENCODER_SINGLETON.get_sentence_embedding_dimension()
-        print(f"[Encoder] Загружена модель: {EMBEDDING_MODEL_NAME} (dim={dim})")
+        resolved_from = getattr(
+            _ENCODER_SINGLETON, "_resolved_from", EMBEDDING_MODEL_NAME
+        )
+        if resolved_from != EMBEDDING_MODEL_NAME:
+            print(
+                f"[Encoder] Загружена модель: {EMBEDDING_MODEL_NAME} "
+                f"(dim={dim}) из {resolved_from}"
+            )
+        else:
+            print(
+                f"[Encoder] Загружена модель: {EMBEDDING_MODEL_NAME} (dim={dim})"
+            )
     return _ENCODER_SINGLETON
 
 # ─────────────────────────────────────────────────────────────────────────────
