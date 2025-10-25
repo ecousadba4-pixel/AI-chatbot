@@ -13,3 +13,54 @@ build:
 
 run:
   containerPort: 8000
+
+  healthCheck:
+    path: /health
+    intervalSeconds: 15
+    timeoutSeconds: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 3
+
+  resources:
+    cpu: "1"
+    memory: "1Gi"
+
+  replicas: 1
+  autoscaling:
+    enabled: false
+
+  env:
+    # --- Qdrant (внутренний сервис) ---
+    QDRANT_HOST: "amvera-karinausadba-run-u4s-ai-chatbot"
+    QDRANT_PORT: "6333"
+    QDRANT_HTTPS: "false"
+    QDRANT_API_KEY: "${QDRANT_API_KEY}"  # если не требуется — оставь пустым в панели
+
+    # --- Redis (внутренний сервис) ---
+    REDIS_HOST: "amvera-karinausadba-run-hotelbot-redis"
+    REDIS_PORT: "6379"
+    REDIS_PASSWORD: "${REDIS_PASSWORD}"  # если без пароля — можно убрать ключ
+
+    # --- Amvera GPT (внешний шлюз по твоему скрину) ---
+    AMVERA_GPT_URL: "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
+    AMVERA_GPT_TOKEN: "${AMVERA_GPT_TOKEN}"
+
+    # --- Shelter PMS ---
+    SHELTER_TOKEN: "${SHELTER_TOKEN}"
+
+    # --- Прочее ---
+    COLLECTIONS_JSON: '["hotel_info_v2","hotel_rooms_v2","hotel_support_v2"]'
+    GUNICORN_WORKERS: "2"
+    PORT: "8000"
+
+    # Стабильность CPU/библиотек в контейнере
+    OMP_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    TOKENIZERS_PARALLELISM: "false"
+
+  secrets:
+    - name: QDRANT_API_KEY
+    - name: REDIS_PASSWORD
+    - name: AMVERA_GPT_TOKEN
+    - name: SHELTER_TOKEN
+
