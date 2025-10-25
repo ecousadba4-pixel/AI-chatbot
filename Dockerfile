@@ -6,7 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
-    TOKENIZERS_PARALLELISM=false
+    TOKENIZERS_PARALLELISM=false \
+    APP_DATA_DIR=/app/Data \
+    EMBEDDING_MODEL_NAME=sberbank-ai/sbert_large_nlu_ru
 
 WORKDIR /app
 
