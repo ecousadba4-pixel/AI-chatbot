@@ -24,7 +24,28 @@ CORS(app)
 # ----------------------------
 # ENV VARIABLES
 # ----------------------------
-DEFAULT_COLLECTIONS = ["hotel_ru"]
+DEFAULT_COLLECTIONS = ["hotel_knowledge"]
+
+# Сопоставление старых названий коллекций новым. Помогает пережить переименования
+# без необходимости немедленно менять переменные окружения.
+COLLECTION_ALIASES: dict[str, str] = {
+    "hotel_ru": "hotel_knowledge",
+    "hotel_info_v2": "hotel_knowledge",
+}
+
+
+def _normalize_collection_names(names: list[str]) -> list[str]:
+    """Применяем алиасы и удаляем дубликаты, сохраняя порядок."""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for name in names:
+        target = COLLECTION_ALIASES.get(name, name)
+        if target not in seen:
+            seen.add(target)
+            normalized.append(target)
+    return normalized
 QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
@@ -45,7 +66,7 @@ def _load_collections() -> list[str]:
         try:
             parsed = json.loads(env_json)
             if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
-                return parsed
+                return _normalize_collection_names(parsed)
         except json.JSONDecodeError:
             print("⚠️ COLLECTIONS_JSON не удалось распарсить как JSON — будет использован fallback")
 
@@ -54,16 +75,16 @@ def _load_collections() -> list[str]:
         or os.getenv("COLLECTION_NAME")
     )
     if single_collection:
-        return [single_collection]
+        return _normalize_collection_names([single_collection])
 
     comma_separated = os.getenv("COLLECTIONS")
     if comma_separated:
         items = [item.strip() for item in comma_separated.split(",") if item.strip()]
         if items:
-            return items
+            return _normalize_collection_names(items)
 
     # Значения по умолчанию (актуальная единая коллекция)
-    return DEFAULT_COLLECTIONS
+    return _normalize_collection_names(DEFAULT_COLLECTIONS)
 
 
 COLLECTIONS = _load_collections()
