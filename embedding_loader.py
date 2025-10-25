@@ -65,6 +65,8 @@ def _default_model_search_paths(model_name: str) -> list[str]:
 def resolve_embedding_model(
     model_name: str,
     candidate_paths: Optional[Iterable[Optional[str]]] = None,
+    *,
+    allow_download: bool = True,
 ) -> SentenceTransformer:
     """Load a sentence-transformer model.
 
@@ -78,12 +80,23 @@ def resolve_embedding_model(
         search_candidates.extend(candidate_paths)
     search_candidates.extend(_default_model_search_paths(model_name))
 
-    for path in _expand_candidate_paths(search_candidates):
+    expanded_paths = _expand_candidate_paths(search_candidates)
+
+    for path in expanded_paths:
         try:
             return SentenceTransformer(path)
         except Exception:
             # Path exists but does not contain a valid model.
             continue
+
+    if not allow_download:
+        searched = "\n".join(f" - {p}" for p in expanded_paths)
+        raise FileNotFoundError(
+            "Не удалось найти локальную модель эмбеддингов. "
+            "Укажите переменную окружения EMBEDDING_MODEL_PATH (или EMBEDDING_MODEL_DIR/APP_DATA_DIR/DATA_DIR) "
+            "и убедитесь, что модель располагается в одном из следующих путей:\n"
+            f"{searched if searched else ' - (список путей пуст)'}"
+        )
 
     return SentenceTransformer(model_name)
 
