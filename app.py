@@ -102,10 +102,26 @@ def search_all_collections(query_embedding: list, limit: int = 5) -> list:
                 limit=limit
             )
             for hit in search:
+                payload = hit.payload or {}
+                text = payload.get("text") or payload.get("text_bm25") or ""
+                if not text and isinstance(payload.get("raw"), dict):
+                    # Попробуем собрать fallback из известных полей.
+                    raw = payload["raw"]
+                    text_blocks = raw.get("text_blocks")
+                    if isinstance(text_blocks, dict):
+                        text = "\n".join(str(v) for v in text_blocks.values() if v)
+                    if not text:
+                        text = raw.get("text", "")
+                    if not text and raw.get("category") == "faq":
+                        q = raw.get("question")
+                        a = raw.get("answer")
+                        if q or a:
+                            text = "Вопрос: {}\nОтвет: {}".format(q or "", a or "")
+
                 all_results.append({
                     "collection": coll,
                     "score": hit.score,
-                    "text": (hit.payload or {}).get("text", "")
+                    "text": text
                 })
         except Exception as e:
             print(f"⚠️ Ошибка поиска в {coll}: {e}")
@@ -324,3 +340,4 @@ if __name__ == "__main__":
     # Для локального запуска: host=0.0.0.0, порт можно переопределить через PORT
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
