@@ -37,7 +37,35 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Список коллекций, по которым ищем
-COLLECTIONS = json.loads(os.getenv("COLLECTIONS_JSON", '["hotel_info_v2", "hotel_rooms_v2", "hotel_support_v2"]'))
+def _load_collections() -> list[str]:
+    """Определение списка коллекций для поиска с учётом переменных окружения."""
+    env_json = os.getenv("COLLECTIONS_JSON")
+    if env_json:
+        try:
+            parsed = json.loads(env_json)
+            if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+                return parsed
+        except json.JSONDecodeError:
+            print("⚠️ COLLECTIONS_JSON не удалось распарсить как JSON — будет использован fallback")
+
+    single_collection = (
+        os.getenv("QDRANT_COLLECTION")
+        or os.getenv("COLLECTION_NAME")
+    )
+    if single_collection:
+        return [single_collection]
+
+    comma_separated = os.getenv("COLLECTIONS")
+    if comma_separated:
+        items = [item.strip() for item in comma_separated.split(",") if item.strip()]
+        if items:
+            return items
+
+    # Значения по умолчанию (старый набор коллекций)
+    return ["hotel_info_v2", "hotel_rooms_v2", "hotel_support_v2"]
+
+
+COLLECTIONS = _load_collections()
 
 # ----------------------------
 # CONNECTIONS
@@ -331,8 +359,79 @@ def home():
             "/api/debug/redis",
             "/api/debug/search",
             "/api/debug/model",
+            "/api/debug/status",
             "/health"
         ]
+    })
+
+
+@app.route("/api/debug/status", methods=["GET"])
+def debug_status():
+    """Aggregate status information about external dependencies."""
+
+    services = {}
+
+    # Qdrant status
+    try:
+        qdrant_client.get_collections()
+        services["qdrant"] = {
+            "status": "ok",
+            "host": QDRANT_HOST,
+            "port": QDRANT_PORT,
+        }
+    except Exception as exc:
+        services["qdrant"] = {
+            "status": "error",
+            "message": str(exc),
+            "host": QDRANT_HOST,
+            "port": QDRANT_PORT,
+        }
+
+    # Redis status
+    try:
+        redis_client.ping()
+        services["redis"] = {
+            "status": "ok",
+            "host": REDIS_HOST,
+            "port": REDIS_PORT,
+        }
+    except Exception as exc:
+        services["redis"] = {
+            "status": "error",
+            "message": str(exc),
+            "host": REDIS_HOST,
+            "port": REDIS_PORT,
+        }
+
+    # Embedding model status
+    try:
+        services["embedding_model"] = {
+            "status": "ok",
+            "name": EMBEDDING_MODEL_NAME,
+            "dimension": model.get_sentence_embedding_dimension(),
+        }
+    except Exception as exc:
+        services["embedding_model"] = {
+            "status": "error",
+            "name": EMBEDDING_MODEL_NAME,
+            "message": str(exc),
+        }
+
+    if AMVERA_GPT_URL:
+        services["amvera_gpt"] = {
+            "status": "configured",
+            "url": AMVERA_GPT_URL,
+        }
+    else:
+        services["amvera_gpt"] = {
+            "status": "not_configured",
+        }
+
+    overall_status = "ok" if all(s.get("status") != "error" for s in services.values()) else "degraded"
+
+    return jsonify({
+        "status": overall_status,
+        "services": services,
     })
 
 # ----------------------------
