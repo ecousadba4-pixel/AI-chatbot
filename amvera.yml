@@ -30,18 +30,18 @@ run:
     enabled: false
 
   env:
-    # --- Qdrant (внутренний сервис) ---
+    # --- Qdrant (внутренний сервис Amvera) ---
     QDRANT_HOST: "amvera-karinausadba-run-u4s-ai-chatbot"
     QDRANT_PORT: "6333"
     QDRANT_HTTPS: "false"
-    QDRANT_API_KEY: "${QDRANT_API_KEY}"  # если не требуется — оставь пустым в панели
+    QDRANT_API_KEY: "${QDRANT_API_KEY}"   # если не нужен — оставь пустым в панели
 
-    # --- Redis (внутренний сервис) ---
+    # --- Redis (внутренний сервис Amvera) ---
     REDIS_HOST: "amvera-karinausadba-run-hotelbot-redis"
     REDIS_PORT: "6379"
-    REDIS_PASSWORD: "${REDIS_PASSWORD}"  # если без пароля — можно убрать ключ
+    REDIS_PASSWORD: "${REDIS_PASSWORD}"   # если без пароля — можно убрать ключ
 
-    # --- Amvera GPT (внешний шлюз по твоему скрину) ---
+    # --- Amvera GPT (твой шлюз) ---
     AMVERA_GPT_URL: "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
     AMVERA_GPT_TOKEN: "${AMVERA_GPT_TOKEN}"
 
