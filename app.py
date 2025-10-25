@@ -24,6 +24,7 @@ CORS(app)
 # ----------------------------
 # ENV VARIABLES
 # ----------------------------
+DEFAULT_COLLECTIONS = ["hotel_ru"]
 QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
@@ -61,8 +62,8 @@ def _load_collections() -> list[str]:
         if items:
             return items
 
-    # Значения по умолчанию (старый набор коллекций)
-    return ["hotel_info_v2", "hotel_rooms_v2", "hotel_support_v2"]
+    # Значения по умолчанию (актуальная единая коллекция)
+    return DEFAULT_COLLECTIONS
 
 
 COLLECTIONS = _load_collections()
@@ -334,7 +335,7 @@ def debug_search():
 def debug_model():
     """Информация о модели эмбеддингов."""
     return jsonify({
-        "model": "sberbank-ai/sbert_large_nlu_ru",
+        "model": EMBEDDING_MODEL_NAME,
         "embedding_dimension": model.get_sentence_embedding_dimension()
     })
 
@@ -351,7 +352,7 @@ def home():
         "message": "Усадьба 'Четыре Сезона' - AI Assistant",
         "version": "3.1",
         "features": ["RAG", "Booking Dialog", "Redis Cache"],
-        "embedding_model": "sberbank-ai/sbert_large_nlu_ru",
+        "embedding_model": EMBEDDING_MODEL_NAME,
         "embedding_dim": model.get_sentence_embedding_dimension(),
         "endpoints": [
             "/api/chat",

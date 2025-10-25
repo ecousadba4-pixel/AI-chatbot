@@ -13,6 +13,7 @@
     pip install python-docx
 """
 
+import os
 import json
 import re
 from pathlib import Path
@@ -21,9 +22,13 @@ from typing import Dict, List, Tuple, Optional
 from docx import Document
 
 # ── Пути ─────────────────────────────────────────────────────────────────────
-BASE_DIR = Path(r"C:\Users\Пользователь\Yandex.Disk\У4С\ИИ чат")
-DOCX_DIR = BASE_DIR / "hotel_docs"
-OUT_DIR  = BASE_DIR / "processed"
+# Для удобства настраиваем пути через переменные окружения, чтобы сценарий
+# можно было запускать не только на локальном Windows-компьютере, но и в
+# контейнере Amvera или в CI. По умолчанию используем директорию рядом со
+# скриптом.
+BASE_DIR = Path(os.getenv("HOTEL_DOCS_BASE_DIR", Path(__file__).resolve().parent))
+DOCX_DIR = Path(os.getenv("HOTEL_DOCS_SOURCE_DIR", BASE_DIR / "hotel_docs"))
+OUT_DIR = Path(os.getenv("HOTEL_DOCS_OUTPUT_DIR", BASE_DIR / "processed"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FILES = {
