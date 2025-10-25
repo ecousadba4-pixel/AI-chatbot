@@ -59,24 +59,58 @@ def normalize_text(text: str) -> str:
     lemmas = [morph.parse(w)[0].normal_form for w in words]
     return " ".join(lemmas)
 
-def select_collection(query_embedding: np.ndarray) -> str:
+def select_collection(query_embedding: list) -> str:
     """Автоматический выбор коллекции по наибольшей плотности похожести."""
     try:
         best_collection = None
         best_score = -1
+        
+        print("🔍 Поиск лучшей коллекции...")
         for coll in COLLECTIONS:
             search = qdrant_client.search(
                 collection_name=coll,
                 query_vector=query_embedding,
                 limit=1
             )
-            if search and search[0].score > best_score:
-                best_score = search[0].score
-                best_collection = coll
-        return best_collection or "hotel_info_v2"
+            if search and len(search) > 0:
+                score = search[0].score
+                print(f"   📊 {coll}: score = {score:.4f}")
+                if score > best_score:
+                    best_score = score
+                    best_collection = coll
+            else:
+                print(f"   ⚠️ {coll}: нет результатов")
+        
+        result = best_collection or "hotel_info_v2"
+        print(f"✅ Выбрана коллекция: {result} (score: {best_score:.4f})")
+        return result
     except Exception as e:
         print(f"⚠️ Collection selection error: {e}")
         return "hotel_info_v2"
+
+def search_all_collections(query_embedding: list, limit: int = 5) -> list:
+    """Поиск по всем коллекциям с объединением результатов."""
+    all_results = []
+    
+    for coll in COLLECTIONS:
+        try:
+            search = qdrant_client.search(
+                collection_name=coll,
+                query_vector=query_embedding,
+                limit=limit
+            )
+            for hit in search:
+                all_results.append({
+                    "collection": coll,
+                    "score": hit.score,
+                    "text": hit.payload.get("text", "")
+                })
+        except Exception as e:
+            print(f"⚠️ Ошибка поиска в {coll}: {e}")
+    
+    # Сортируем по score (убывание)
+    all_results.sort(key=lambda x: x["score"], reverse=True)
+    return all_results[:limit]
 
 def generate_response(context: str, question: str) -> str:
     """Отправка запроса в Amvera GPT‑модель для генерации ответа с кэшированием в Redis."""
@@ -135,37 +169,55 @@ def chat():
     if not question:
         return jsonify({"response": "Пожалуйста, введите вопрос."})
     
-    print(f"💬 Вопрос [{session_id[:8]}]: {question}")
+    print(f"\n💬 Вопрос [{session_id[:8]}]: {question}")
     
     # 1. Предобработка и векторизация
     normalized = normalize_text(question)
-    query_embedding = model.encode(normalized)
+    print(f"📝 Нормализовано: {normalized}")
     
-    # 2. Определяем подходящую коллекцию
-    collection = select_collection(query_embedding)
-    print(f"🎯 Коллекция выбрана: {collection}")
+    # КРИТИЧНО: преобразуем numpy array в list
+    query_embedding = model.encode(normalized).tolist()
+    print(f"🔢 Embedding размер: {len(query_embedding)}")
     
-    # 3. Ищем релевантные документы в Qdrant
-    search_results = qdrant_client.search(
-        collection_name=collection,
-        query_vector=query_embedding,
-        limit=3
-    )
+    # 2. Поиск по всем коллекциям для лучших результатов
+    print(f"🔍 Поиск по всем коллекциям...")
+    all_results = search_all_collections(query_embedding, limit=5)
     
-    # 4. Формируем контекст из найденных документов
-    context = "\n".join([hit.payload.get("text", "") for hit in search_results])
-    if not context:
-        context = "Информация временно недоступна."
+    if not all_results:
+        print("❌ Ничего не найдено ни в одной коллекции!")
+        return jsonify({
+            "response": "Извините, не нашёл информации по вашему вопросу. Попробуйте переформулировать или свяжитесь с администратором.",
+            "session_id": session_id
+        })
     
-    print(f"📄 Найденный контекст (первые 200 символов): {context[:200]}...")
+    # 3. Формируем контекст из топ-результатов
+    print(f"\n📊 Топ-5 результатов:")
+    for i, res in enumerate(all_results, 1):
+        print(f"   {i}. [{res['collection']}] score={res['score']:.4f} | text: {res['text'][:100]}...")
     
-    # 5. Генерация финального ответа (с кэшированием в Redis)
+    context = "\n\n".join([res["text"] for res in all_results[:3]])
+    
+    if not context.strip():
+        print("⚠️ Контекст пустой после извлечения text!")
+        return jsonify({
+            "response": "Извините, не удалось сформировать ответ. Попробуйте переформулировать вопрос.",
+            "session_id": session_id
+        })
+    
+    print(f"\n📄 Итоговый контекст ({len(context)} символов):\n{context[:300]}...\n")
+    
+    # 4. Генерация финального ответа (с кэшированием в Redis)
     answer = generate_response(context, question)
+    print(f"✅ Ответ сгенерирован: {answer[:100]}...\n")
     
     return jsonify({
         "response": answer,
-        "collection": collection,
-        "session_id": session_id
+        "session_id": session_id,
+        "debug_info": {
+            "top_collection": all_results[0]["collection"] if all_results else None,
+            "top_score": all_results[0]["score"] if all_results else 0,
+            "results_count": len(all_results)
+        }
     })
 
 @app.route("/api/debug/qdrant", methods=["GET"])
@@ -189,6 +241,33 @@ def debug_redis():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+@app.route("/api/debug/search", methods=["POST"])
+def debug_search():
+    """Отладочный endpoint для тестирования поиска."""
+    data = request.get_json()
+    question = data.get("message", "").strip()
+    
+    if not question:
+        return jsonify({"error": "message required"})
+    
+    normalized = normalize_text(question)
+    query_embedding = model.encode(normalized).tolist()
+    
+    results = search_all_collections(query_embedding, limit=10)
+    
+    return jsonify({
+        "question": question,
+        "normalized": normalized,
+        "results": [
+            {
+                "collection": r["collection"],
+                "score": r["score"],
+                "text_preview": r["text"][:200]
+            }
+            for r in results
+        ]
+    })
+
 @app.route("/health")
 def health():
     """Health check для Amvera и мониторинга."""
@@ -200,11 +279,12 @@ def home():
     return jsonify({
         "status": "ok",
         "message": "Усадьба 'Четыре Сезона' - AI Assistant",
-        "version": "1.0",
+        "version": "2.0",
         "endpoints": [
             "/api/chat",
             "/api/debug/qdrant",
             "/api/debug/redis",
+            "/api/debug/search",
             "/health"
         ]
     })
