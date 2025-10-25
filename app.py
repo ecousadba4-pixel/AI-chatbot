@@ -10,8 +10,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from sentence_transformers import SentenceTransformer
 from datetime import datetime
+
+from embedding_loader import resolve_embedding_model
 from price_dialog import handle_price_dialog
 
 # ----------------------------
@@ -49,7 +50,18 @@ morph = pymorphy3.MorphAnalyzer()
 
 # >>> ГЛАВНОЕ ИЗМЕНЕНИЕ: русская крупная модель эмбеддингов <<<
 # Размер эмбеддинга = 1024
-model = SentenceTransformer("sberbank-ai/sbert_large_nlu_ru")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sberbank-ai/sbert_large_nlu_ru")
+EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH")
+
+
+model = resolve_embedding_model(
+    model_name=EMBEDDING_MODEL_NAME,
+    candidate_paths=[
+        EMBEDDING_MODEL_PATH,
+        "/app/data/sberbank-ai/sbert_large_nlu_ru",
+        "/data/sberbank-ai/sbert_large_nlu_ru",
+    ],
+)
 
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
@@ -60,7 +72,6 @@ qdrant_client = QdrantClient(
 
 print(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (https={QDRANT_HTTPS})")
 print(f"✅ Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-print("🧠 Embedding model loaded: sberbank-ai/sbert_large_nlu_ru")
 print("🔢 Embedding dimension:", model.get_sentence_embedding_dimension())
 
 # ----------------------------
@@ -313,4 +324,3 @@ if __name__ == "__main__":
     # Для локального запуска: host=0.0.0.0, порт можно переопределить через PORT
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
-
