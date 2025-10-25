@@ -5,11 +5,13 @@ import requests
 import pymorphy3
 import numpy as np
 import redis
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
+from price_dialog import handle_price_dialog
 
 # ----------------------------
 # INIT
@@ -58,35 +60,6 @@ def normalize_text(text: str) -> str:
     words = re.findall(r"[а-яёa-z0-9]+", text.lower())
     lemmas = [morph.parse(w)[0].normal_form for w in words]
     return " ".join(lemmas)
-
-def select_collection(query_embedding: list) -> str:
-    """Автоматический выбор коллекции по наибольшей плотности похожести."""
-    try:
-        best_collection = None
-        best_score = -1
-        
-        print("🔍 Поиск лучшей коллекции...")
-        for coll in COLLECTIONS:
-            search = qdrant_client.search(
-                collection_name=coll,
-                query_vector=query_embedding,
-                limit=1
-            )
-            if search and len(search) > 0:
-                score = search[0].score
-                print(f"   📊 {coll}: score = {score:.4f}")
-                if score > best_score:
-                    best_score = score
-                    best_collection = coll
-            else:
-                print(f"   ⚠️ {coll}: нет результатов")
-        
-        result = best_collection or "hotel_info_v2"
-        print(f"✅ Выбрана коллекция: {result} (score: {best_score:.4f})")
-        return result
-    except Exception as e:
-        print(f"⚠️ Collection selection error: {e}")
-        return "hotel_info_v2"
 
 def search_all_collections(query_embedding: list, limit: int = 5) -> list:
     """Поиск по всем коллекциям с объединением результатов."""
@@ -171,7 +144,26 @@ def chat():
     
     print(f"\n💬 Вопрос [{session_id[:8]}]: {question}")
     
-    # 1. Предобработка и векторизация
+    # 1. ПРОВЕРКА НА КОМАНДЫ СБРОСА
+    if question.lower() in ["отмена", "сброс", "начать заново", "стоп", "reset"]:
+        # Сброс сессии бронирования
+        redis_client.delete(f"booking_session:{session_id}")
+        return jsonify({
+            "response": "Диалог сброшен. Чем могу помочь?",
+            "session_id": session_id
+        })
+    
+    # 2. ПРОВЕРКА НА БРОНИРОВАНИЕ/ЦЕНЫ
+    booking_result = handle_price_dialog(session_id, question, redis_client)
+    
+    if booking_result:  # Если модуль вернул ответ
+        return jsonify({
+            "response": booking_result["answer"],
+            "session_id": session_id,
+            "mode": booking_result.get("mode", "booking")
+        })
+    
+    # 3. ОБЫЧНЫЙ ПОТОК (Qdrant + GPT)
     normalized = normalize_text(question)
     print(f"📝 Нормализовано: {normalized}")
     
@@ -179,7 +171,7 @@ def chat():
     query_embedding = model.encode(normalized).tolist()
     print(f"🔢 Embedding размер: {len(query_embedding)}")
     
-    # 2. Поиск по всем коллекциям для лучших результатов
+    # Поиск по всем коллекциям для лучших результатов
     print(f"🔍 Поиск по всем коллекциям...")
     all_results = search_all_collections(query_embedding, limit=5)
     
@@ -190,7 +182,7 @@ def chat():
             "session_id": session_id
         })
     
-    # 3. Формируем контекст из топ-результатов
+    # Формируем контекст из топ-результатов
     print(f"\n📊 Топ-5 результатов:")
     for i, res in enumerate(all_results, 1):
         print(f"   {i}. [{res['collection']}] score={res['score']:.4f} | text: {res['text'][:100]}...")
@@ -206,7 +198,7 @@ def chat():
     
     print(f"\n📄 Итоговый контекст ({len(context)} символов):\n{context[:300]}...\n")
     
-    # 4. Генерация финального ответа (с кэшированием в Redis)
+    # Генерация финального ответа (с кэшированием в Redis)
     answer = generate_response(context, question)
     print(f"✅ Ответ сгенерирован: {answer[:100]}...\n")
     
@@ -279,7 +271,8 @@ def home():
     return jsonify({
         "status": "ok",
         "message": "Усадьба 'Четыре Сезона' - AI Assistant",
-        "version": "2.0",
+        "version": "3.0",
+        "features": ["RAG", "Booking Dialog", "Redis Cache"],
         "endpoints": [
             "/api/chat",
             "/api/debug/qdrant",
