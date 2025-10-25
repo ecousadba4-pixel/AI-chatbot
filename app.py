@@ -88,6 +88,44 @@ def _load_collections() -> list[str]:
 
 COLLECTIONS = _load_collections()
 
+
+def _filter_existing_collections(
+    client: QdrantClient,
+    requested: list[str],
+    fallback: list[str],
+) -> list[str]:
+    """Убираем из списка отсутствующие коллекции и подбираем резервные."""
+
+    try:
+        response = client.get_collections()
+        available = {collection.name for collection in response.collections}
+    except Exception as exc:  # pragma: no cover - сетевой сбой
+        print(f"⚠️ Не удалось получить список коллекций из Qdrant: {exc}")
+        return requested
+
+    if not available:
+        print("⚠️ В Qdrant не найдено ни одной коллекции")
+        return requested
+
+    filtered = [name for name in requested if name in available]
+    if filtered:
+        missing = [name for name in requested if name not in available]
+        if missing:
+            print(
+                "⚠️ Пропускаем отсутствующие коллекции: " + ", ".join(sorted(missing))
+            )
+        return filtered
+
+    fallback_candidates = [name for name in fallback if name in available]
+    if not fallback_candidates:
+        fallback_candidates = sorted(available)
+
+    print(
+        "⚠️ Ни одна из запрошенных коллекций не найдена. Используем fallback: "
+        + ", ".join(fallback_candidates)
+    )
+    return fallback_candidates
+
 # ----------------------------
 # CONNECTIONS
 # ----------------------------
@@ -124,6 +162,13 @@ qdrant_client = QdrantClient(
 print(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (https={QDRANT_HTTPS})")
 print(f"✅ Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
 print("🔢 Embedding dimension:", model.get_sentence_embedding_dimension())
+
+COLLECTIONS = _filter_existing_collections(
+    qdrant_client,
+    COLLECTIONS,
+    DEFAULT_COLLECTIONS,
+)
+print("📚 Активные коллекции:", ", ".join(COLLECTIONS))
 
 # ----------------------------
 # HELPERS
