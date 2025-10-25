@@ -57,10 +57,12 @@ run:
     OMP_NUM_THREADS: "1"
     MKL_NUM_THREADS: "1"
     TOKENIZERS_PARALLELISM: "false"
+    EMBEDDING_MODEL_PATH: "/data/sberbank-ai/sbert_large_nlu_ru"
 
   secrets:
     - name: QDRANT_API_KEY
     - name: REDIS_PASSWORD
     - name: AMVERA_GPT_TOKEN
     - name: SHELTER_TOKEN
+
 
