@@ -297,7 +297,7 @@ def handle_price_dialog(user_id, user_input, redis_client):
             has_keyword = bool(PRICE_KEYWORD_LEMMAS & normalized_words)
             has_phrase = any(phrase in user_input.lower() for phrase in PRICE_KEYWORD_PHRASES)
 
-            if has_keyword или has_phrase:
+            if has_keyword or has_phrase:
                 session["step"] = 1
                 save_session(user_id, session, redis_client)
                 return {
