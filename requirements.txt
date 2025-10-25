@@ -6,7 +6,6 @@ sentence-transformers
 python-dateutil
 gunicorn
 redis
-python-dotenv
 pymorphy3
 pymorphy3-dicts-ru
 numpy
