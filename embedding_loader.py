@@ -84,7 +84,9 @@ def resolve_embedding_model(
 
     for path in expanded_paths:
         try:
-            return SentenceTransformer(path)
+            model = SentenceTransformer(path)
+            setattr(model, "_resolved_from", path)
+            return model
         except Exception:
             # Path exists but does not contain a valid model.
             continue
@@ -98,5 +100,8 @@ def resolve_embedding_model(
             f"{searched if searched else ' - (список путей пуст)'}"
         )
 
-    return SentenceTransformer(model_name)
+    model = SentenceTransformer(model_name)
+    setattr(model, "_resolved_from", model_name)
+    return model
+
 
