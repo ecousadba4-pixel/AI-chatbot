@@ -190,8 +190,8 @@ def validate_guests(adults, kids_ages):
     for age in kids_ages:
         if age < 0:
             return False, "Возраст ребенка не может быть отрицательным"
-        if age > 17:
-            return False, "Дети старше 17 лет считаются взрослыми"
+        if age >= 12:
+            return False, "Дети 12 лет и старше считаются взрослыми"
 
     return True, ""
 
@@ -297,7 +297,7 @@ def handle_price_dialog(user_id, user_input, redis_client):
             has_keyword = bool(PRICE_KEYWORD_LEMMAS & normalized_words)
             has_phrase = any(phrase in user_input.lower() for phrase in PRICE_KEYWORD_PHRASES)
 
-            if has_keyword or has_phrase:
+            if has_keyword или has_phrase:
                 session["step"] = 1
                 save_session(user_id, session, redis_client)
                 return {
@@ -399,11 +399,11 @@ def handle_price_dialog(user_id, user_input, redis_client):
                     kids_ages = [int(a.strip()) for a in user_input.split(",") if a.strip().isdigit()]
 
                     # Валидация возраста детей
-                    valid_ages = all(0 <= age <= 17 for age in kids_ages)
+                    valid_ages = all(0 <= age <= 11 for age in kids_ages)
 
                     if not valid_ages:
                         return {
-                            "answer": "Возраст детей должен быть от 0 до 17 лет. Укажите правильные возрасты через запятую или напишите 'нет'.",
+                            "answer": "Возраст детей должен быть от 0 до 11 лет. Укажите правильные возрасты через запятую или напишите 'нет'.",
                             "mode": "booking",
                         }
 
