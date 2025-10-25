@@ -30,7 +30,6 @@ DEFAULT_COLLECTIONS = ["hotel_knowledge"]
 # без необходимости немедленно менять переменные окружения.
 COLLECTION_ALIASES: dict[str, str] = {
     "hotel_ru": "hotel_knowledge",
-    "hotel_info_v2": "hotel_knowledge",
 }
 
 
