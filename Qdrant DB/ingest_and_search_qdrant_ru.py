@@ -5,9 +5,9 @@ ingest_and_search_qdrant_ru.py
 Заливает JSON из ./processed в Qdrant (Amvera/локально) и позволяет сделать гибридный поиск.
 
 Особенности:
-- Эмбеддинги для sberbank-ai/sbert_large_nlu_ru через transformers (mean pooling + L2).
+- Эмбеддинги для sberbank-ai/sbert_large_nlu_ru через sentence-transformers (mean pooling + L2).
 - Кэш энкодера (модель грузится один раз).
-- Локальная загрузка модели: HF_MODEL_LOCAL_DIR, HF_LOCAL_ONLY в .env (офлайн режим).
+- Локальная загрузка модели: EMBEDDING_MODEL_PATH (и совместимость с HF_MODEL_LOCAL_DIR/HF_LOCAL_ONLY).
 - Автосборка QDRANT_URL из QDRANT_HOST/QDRANT_PORT/QDRANT_HTTPS, если QDRANT_URL не задан.
 - Безопасное пересоздание коллекции (delete -> create), batch-upsert.
 - Нормализованные эмбеддинги (COSINE).
@@ -27,10 +27,11 @@ CLI:
     --json                   печатать JSON результат
 
 Требования:
-    pip install qdrant-client transformers torch python-dotenv numpy
+    pip install qdrant-client sentence-transformers torch python-dotenv numpy
 """
 
 import os
+import sys
 import json
 import argparse
 import uuid
@@ -50,9 +51,20 @@ from qdrant_client.http.models import (
 )
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-# HF encoder (BERT large RU)
-import torch
-from transformers import AutoTokenizer, AutoModel
+# Ensure local executions can import shared helpers irrespective of the entrypoint location.
+_HERE = Path(__file__).resolve().parent
+for candidate in [_HERE, *_HERE.parents]:
+    helper = candidate / "embedding_loader.py"
+    if helper.exists():
+        if str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+        break
+else:
+    raise ImportError(
+        "Не удалось найти embedding_loader.py рядом со скриптом; проверь структуру репозитория."
+    )
+
+from embedding_loader import resolve_embedding_model
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Конфигурация путей и коллекции
@@ -61,22 +73,37 @@ BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "processed"
 
 # Модель эмбеддингов — ваша
-EMB_MODEL_NAME = "sberbank-ai/sbert_large_nlu_ru"
-EMB_SIZE = 1024  # BERT-large hidden_size=1024
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sberbank-ai/sbert_large_nlu_ru")
+EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH")
+
+
+def _as_bool(value: Optional[str], default: bool = True) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+ALLOW_EMBEDDING_DOWNLOAD = _as_bool(os.getenv("ALLOW_EMBEDDING_DOWNLOAD"), default=False)
+hf_local_only = os.getenv("HF_LOCAL_ONLY")
+if hf_local_only is not None:
+    # Совместимость с прежней переменной окружения
+    ALLOW_EMBEDDING_DOWNLOAD = not _as_bool(hf_local_only, default=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Загрузка .env и сборка QDRANT_URL
 # ─────────────────────────────────────────────────────────────────────────────
 load_dotenv(dotenv_path=BASE_DIR / ".env")
+load_dotenv(dotenv_path=BASE_DIR.parent / ".env")
 
-def _as_bool(x: Optional[str], default=True) -> bool:
+def _as_bool_env(x: Optional[str], default=True) -> bool:
     if x is None:
         return default
     return str(x).strip().lower() in ("1", "true", "yes", "y", "on")
 
+
 host = os.getenv("QDRANT_HOST")                     # напр.: u4s-ai-chatbot-karinausadba.amvera.io
 port = os.getenv("QDRANT_PORT")                     # напр.: 443
-https_flag = _as_bool(os.getenv("QDRANT_HTTPS"), True)
+https_flag = _as_bool_env(os.getenv("QDRANT_HTTPS"), True)
 
 if host:
     scheme = "https" if https_flag else "http"
@@ -92,96 +119,25 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")        # может быть пус
 COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hotel_ru")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Encoder: sberbank-ai/sbert_large_nlu_ru через transformers + кэш
+# Encoder: SentenceTransformer с единым загрузчиком
 # ─────────────────────────────────────────────────────────────────────────────
-_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 _ENCODER_SINGLETON = None  # кэш энкодера
 
-class HFEncoder:
-    """
-    Простой sentence-encoder: mean pooling по токенам + L2-норма.
-    Гарантированно работает с sberbank-ai/sbert_large_nlu_ru.
-    Поддерживает офлайн-режим с локальной папкой модели.
-    """
-    def __init__(self, model_name: str):
-        print(f"[HFEncoder] Загружаю модель: {model_name} на {_DEVICE}")
 
-        # Локальные настройки из .env (опциональны)
-        local_dir = os.getenv("HF_MODEL_LOCAL_DIR")          # напр.: C:\models\sbert_large_nlu_ru
-        local_only = _as_bool(os.getenv("HF_LOCAL_ONLY"), True)
-
-        model_ref = local_dir if local_dir and Path(local_dir).exists() else model_name
-        if model_ref == model_name and local_only:
-            print("[HFEncoder] Включен локальный режим (HF_LOCAL_ONLY=1), но локальный путь не задан/не найден. "
-                  "Задайте HF_MODEL_LOCAL_DIR в .env или снимите локальный режим (HF_LOCAL_ONLY=0).")
-
-        # Загружаем токенайзер и модель
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_ref,
-                use_fast=True,
-                local_files_only=local_only
-            )
-            self.model = AutoModel.from_pretrained(
-                model_ref,
-                local_files_only=local_only
-            )
-        except OSError as e:
-            msg = (
-                f"[HFEncoder] Не удалось загрузить модель '{model_ref}'.\n"
-                f"- Если работаете офлайн, скачайте модель заранее и укажите HF_MODEL_LOCAL_DIR в .env "
-                f"(например C:\\models\\sbert_large_nlu_ru).\n"
-                f"- Или установите HF_LOCAL_ONLY=0 для загрузки из интернета (при наличии доступа).\n"
-                f"Исключение: {e}"
-            )
-            raise RuntimeError(msg)
-
-        self.model.to(_DEVICE)
-        self.model.eval()
-
-        hidden = getattr(self.model.config, "hidden_size", None)
-        if hidden and hidden != EMB_SIZE:
-            print(f"[HFEncoder] Внимание: hidden_size={hidden}, ожидаем EMB_SIZE={EMB_SIZE}. "
-                  f"Коллекцию создаём c size={EMB_SIZE}.")
-        else:
-            print(f"[HFEncoder] hidden_size={hidden or 'не удалось определить'}")
-
-    @torch.no_grad()
-    def encode(self, texts: List[str], batch_size: int = 16, normalize: bool = True) -> np.ndarray:
-        """
-        :param texts: список строк
-        :return: np.ndarray [N, hidden]
-        """
-        def mean_pool(last_hidden, attention_mask):
-            mask = attention_mask.unsqueeze(-1).expand(last_hidden.size()).float()  # [B,T,H]
-            summed = torch.sum(last_hidden * mask, dim=1)
-            counts = torch.clamp(mask.sum(dim=1), min=1e-9)
-            return summed / counts
-
-        vecs = []
-        for i in range(0, len(texts), batch_size):
-            batch = [t if isinstance(t, str) else "" for t in texts[i:i + batch_size]]
-            enc = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="pt"
-            )
-            enc = {k: v.to(_DEVICE) for k, v in enc.items()}
-            out = self.model(**enc)
-            token_embeddings = out.last_hidden_state  # [B,T,H]
-            sent_emb = mean_pool(token_embeddings, enc["attention_mask"])  # [B,H]
-            if normalize:
-                sent_emb = torch.nn.functional.normalize(sent_emb, p=2, dim=1)
-            vecs.append(sent_emb.detach().cpu().numpy())
-
-        return np.vstack(vecs) if vecs else np.zeros((0, EMB_SIZE), dtype=np.float32)
-
-def get_encoder() -> HFEncoder:
+def get_encoder():
     global _ENCODER_SINGLETON
     if _ENCODER_SINGLETON is None:
-        _ENCODER_SINGLETON = HFEncoder(EMB_MODEL_NAME)
+        candidates = [
+            EMBEDDING_MODEL_PATH,
+            os.getenv("HF_MODEL_LOCAL_DIR"),
+        ]
+        _ENCODER_SINGLETON = resolve_embedding_model(
+            model_name=EMBEDDING_MODEL_NAME,
+            candidate_paths=candidates,
+            allow_download=ALLOW_EMBEDDING_DOWNLOAD,
+        )
+        dim = _ENCODER_SINGLETON.get_sentence_embedding_dimension()
+        print(f"[Encoder] Загружена модель: {EMBEDDING_MODEL_NAME} (dim={dim})")
     return _ENCODER_SINGLETON
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,13 +276,15 @@ def ingest(recreate: bool = False):
     client = qdrant_client()
     check_qdrant_alive(client)
 
+    encoder = get_encoder()  # кэшированный энкодер
+    vector_size = encoder.get_sentence_embedding_dimension()
+
     if recreate:
-        recreate_collection_safe(client, COLLECTION, EMB_SIZE)
+        recreate_collection_safe(client, COLLECTION, vector_size)
     else:
-        ensure_collection(client, COLLECTION, EMB_SIZE)
+        ensure_collection(client, COLLECTION, vector_size)
 
     data = load_processed()
-    encoder = get_encoder()  # кэшированный энкодер
 
     batch_texts: List[str] = []
     batch_payloads: List[Dict[str, Any]] = []
@@ -339,9 +297,14 @@ def ingest(recreate: bool = False):
         nonlocal batch_texts, batch_payloads, batch_ids
         if not batch_texts:
             return
-        vecs = encoder.encode(batch_texts, batch_size=16, normalize=True)  # [N, EMB_SIZE]
+        vecs = encoder.encode(
+            batch_texts,
+            batch_size=16,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
         pts = [
-            PointStruct(id=pid, vector=vec.astype(np.float32), payload=pl)
+            PointStruct(id=pid, vector=vec.astype(np.float32, copy=False), payload=pl)
             for pid, vec, pl in zip(batch_ids, vecs, batch_payloads)
         ]
         client.upsert(collection_name=COLLECTION, points=pts)
@@ -453,7 +416,12 @@ def search(query: str,
     check_qdrant_alive(client)
 
     encoder = get_encoder()
-    qv = encoder.encode([query], batch_size=8, normalize=True)[0].astype(np.float32)
+    qv = encoder.encode(
+        [query],
+        batch_size=8,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )[0].astype(np.float32, copy=False)
 
     must_conditions = []
     if where_category:
