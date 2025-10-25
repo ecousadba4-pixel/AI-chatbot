@@ -49,7 +49,7 @@ run:
     SHELTER_TOKEN: "${SHELTER_TOKEN}"
 
     # --- Прочее ---
-    COLLECTIONS_JSON: '["hotel_info_v2","hotel_rooms_v2","hotel_support_v2"]'
+    COLLECTIONS_JSON: '["hotel_ru"]'
     GUNICORN_WORKERS: "2"
     PORT: "8000"
 

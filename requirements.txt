@@ -9,3 +9,5 @@ redis
 pymorphy3
 pymorphy3-dicts-ru
 numpy
+python-docx
+python-dotenv
