@@ -17,15 +17,22 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Python зависимости (кэшируем слой)
+# Python зависимости
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
-# Предзагрузка той же модели, что в app.py (1024-мерные эмбеддинги)
-RUN python - <<'PY'\nfrom sentence_transformers import SentenceTransformer\nSentenceTransformer('sberbank-ai/sbert_large_nlu_ru')\nPY
+# ===============================
+# Предзагрузка модели эмбеддингов
+# ===============================
+RUN python - <<'PY'
+from sentence_transformers import SentenceTransformer
+SentenceTransformer('sberbank-ai/sbert_large_nlu_ru')
+PY
 
+# ===============================
 # Код приложения
+# ===============================
 COPY . .
 
 # Безопасность: нерутовый пользователь
@@ -34,6 +41,4 @@ USER appuser
 
 EXPOSE 8000
 
-# Запуск (gunicorn.config.py уже в репозитории)
 CMD ["gunicorn", "--config", "gunicorn.config.py", "app:app"]
-
