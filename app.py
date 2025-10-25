@@ -52,6 +52,7 @@ morph = pymorphy3.MorphAnalyzer()
 # Размер эмбеддинга = 1024
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sberbank-ai/sbert_large_nlu_ru")
 EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH")
+ALLOW_EMBEDDING_DOWNLOAD = os.getenv("ALLOW_EMBEDDING_DOWNLOAD", "false").lower() in ("1", "true", "yes")
 
 
 model = resolve_embedding_model(
@@ -61,6 +62,7 @@ model = resolve_embedding_model(
         "/app/data/sberbank-ai/sbert_large_nlu_ru",
         "/data/sberbank-ai/sbert_large_nlu_ru",
     ],
+    allow_download=ALLOW_EMBEDDING_DOWNLOAD,
 )
 
 qdrant_client = QdrantClient(
