@@ -42,10 +42,25 @@ FILES = {
 
 # ── Утилиты ──────────────────────────────────────────────────────────────────
 def fix_typos(text: str) -> str:
+    # Сначала устраняем неразрывные пробелы, которые попадали из DOCX и превращались
+    # в «невидимые» символы в JSON. Из-за них ранее появлялись странные артефакты
+    # (например, удвоенные буквы при склейке слов). Теперь заменяем их на обычные
+    # пробелы до остальных преобразований.
+    text = text.replace("\xa0", " ")
+
     # Нормализация Wi-Fi (лат/кирилл i/і, дефис/пробел/ничего)
     text = re.sub(r"\bW[iі][-\s_]*F[iі]\b", "Wi-Fi", text, flags=re.I)
     text = re.sub(r"\bWI[\s_-]*FII\b", "Wi-Fi", text, flags=re.I)
     text = re.sub(r"\bWi-?F\b", "Wi-Fi", text, flags=re.I)
+
+    # Частотные опечатки, появлявшиеся после парсинга
+    typo_map = {
+        "каализа": "канализа",
+        "плотенц": "полотенц",
+    }
+    for wrong, right in typo_map.items():
+        text = re.sub(wrong, right, text, flags=re.I)
+
     # Пробелы/переводы строк
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -416,9 +431,18 @@ def build_contacts(text: str) -> List[Dict]:
 
     links = re.findall(r"(https?://[^\s]+)", text, flags=re.I)
     opening_hours = extract_opening_hours(text)
-    has_wa = ("whatsapp" in text.lower()) or ("ватсап" in text.lower()) \
-             or any("wa.me" in l.lower() or "whatsapp" in l.lower() for l in links)
     geo = extract_geo_from_yandex_links(links)
+
+    def detect_whatsapp(phone_match: Optional[re.Match]) -> bool:
+        if not phone_match:
+            return False
+        # Берём окрестность вокруг найденного телефона, чтобы искать указание на
+        # WhatsApp именно для него, а не глобально в документе.
+        start, end = phone_match.span(2)
+        window = text[max(0, start - 120): min(len(text), end + 120)].lower()
+        if any(token in window for token in ("whatsapp", "ватсап")):
+            return True
+        return any("wa.me" in l.lower() or "whatsapp" in l.lower() for l in links)
 
     def pack_contact(contact_id, ctype, title, phone_match):
         if not phone_match:
@@ -426,6 +450,7 @@ def build_contacts(text: str) -> List[Dict]:
         raw = phone_match.group(2)
         phones = [raw]
         phones_norm = list(filter(None, [normalize_phone_e164(raw)]))
+        has_wa = detect_whatsapp(phone_match)
         entries.append({
             "id": contact_id,
             "category": "contacts",
