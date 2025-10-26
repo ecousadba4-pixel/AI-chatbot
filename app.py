@@ -535,7 +535,9 @@ def debug_search():
     })
 
 
-@app.route("/api/debug/amvera", methods=["GET"])
+# Позволяем обращаться как к `/api/debug/amvera`, так и к `/api/debug/amvera/`,
+# чтобы избежать неожиданных 404 из‑за отличий в настройках прокси.
+@app.route("/api/debug/amvera", methods=["GET"], strict_slashes=False)
 def debug_amvera():
     """Проверка доступности Amvera GPT-модели."""
 
@@ -627,6 +629,41 @@ def health():
     """Health check."""
     return "OK", 200
 
+# ----------------------------
+# ROOT PAGE
+# ----------------------------
+_DEFAULT_ENDPOINT_ORDER = [
+    "/api/chat",
+    "/api/debug/qdrant",
+    "/api/debug/redis",
+    "/api/debug/search",
+    "/api/debug/amvera",
+    "/api/debug/model",
+    "/api/debug/status",
+    "/health",
+]
+
+
+def _collect_public_endpoints() -> list[str]:
+    """Собрать список зарегистрированных эндпоинтов без `static`."""
+
+    collected: dict[str, None] = {}
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint == "static":
+            continue
+        collected.setdefault(rule.rule, None)
+
+    ordered: list[str] = []
+    for path in _DEFAULT_ENDPOINT_ORDER:
+        if path in collected:
+            ordered.append(path)
+            collected.pop(path)
+
+    # Добавим любые дополнительные эндпоинты, не попавшие в предопределённый порядок.
+    ordered.extend(sorted(collected.keys()))
+    return ordered
+
+
 @app.route("/")
 def home():
     """Главная страница API."""
@@ -637,16 +674,7 @@ def home():
         "features": ["RAG", "Booking Dialog", "Redis Cache"],
         "embedding_model": EMBEDDING_MODEL_NAME,
         "embedding_dim": model.get_sentence_embedding_dimension(),
-        "endpoints": [
-            "/api/chat",
-            "/api/debug/qdrant",
-            "/api/debug/redis",
-            "/api/debug/search",
-            "/api/debug/amvera",
-            "/api/debug/model",
-            "/api/debug/status",
-            "/health"
-        ]
+        "endpoints": _collect_public_endpoints(),
     })
 
 
