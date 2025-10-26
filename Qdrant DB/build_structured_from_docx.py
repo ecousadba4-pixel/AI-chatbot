@@ -16,6 +16,7 @@
 import os
 import json
 import re
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -119,6 +120,12 @@ def normalize_room_name(name: str) -> str:
     s = re.sub(r"[^a-z0-9_а-я]", "", s)
     return s
 
+
+def stable_hash(value: str, length: int = 12) -> str:
+    """Детерминированный короткий хеш для идентификаторов."""
+    value = value or ""
+    return hashlib.md5(value.encode("utf-8")).hexdigest()[:length]
+
 # ── Извлечение чисел/флагов ─────────────────────────────────────────────────
 NUM_WORDS = {
     "одна":1, "один":1, "одно":1, "по одной":1, "по одному":1,
@@ -188,8 +195,29 @@ def to_bool(text: str, *needles) -> bool:
     return any(n in tlow for n in needles)
 
 # ── Контакты: helpers ────────────────────────────────────────────────────────
-PHONE_RAW_RE = re.compile(r"(?:\+7|8)\s*[\(\-]?\s*\d{3}\s*[\)\-]?\s*\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+PHONE_RAW_RE = re.compile(r"(?:\+7|8)\s*[\(\-]?\s*\d{3}\s*[\)\-]?\s*(?:\d[\s\-]?){7}")
 DIGITS_RE = re.compile(r"\d+")
+URL_RE = re.compile(r"(https?://[^\s]+)", flags=re.I)
+
+
+def unique_preserve(seq: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def sentence_with_fragment(text: str, fragment: str) -> Optional[str]:
+    if not text:
+        return None
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    for sentence in sentences:
+        if fragment in sentence:
+            return sentence.strip()
+    return None
 
 def normalize_phone_e164(phone: str) -> Optional[str]:
     """Приводим российские номера к +7XXXXXXXXXX"""
@@ -358,8 +386,12 @@ def build_rooms(text: str) -> List[Dict]:
             "sofa_beds": sof or 0,
         }
 
+        room_slug = normalize_room_name(subcat)
+        if not room_slug:
+            room_slug = f"auto_{stable_hash(title)}"
+
         entries.append({
-            "id": f"rooms:{normalize_room_name(subcat) or abs(hash(title))}",
+            "id": f"rooms:{room_slug}",
             "category": "rooms",
             "subcategory": subcat,
             "title": title,
@@ -422,67 +454,100 @@ def build_concept(text: str) -> List[Dict]:
     return merged
 
 def build_contacts(text: str) -> List[Dict]:
-    entries = []
+    entries: List[Dict] = []
     phone_pat = PHONE_RAW_RE
 
-    booking   = re.search(r"(брони\w*|заказ\w*|онлайн\s*бронир\w*).{0,100}(" + phone_pat.pattern + r")", text, flags=re.I | re.S)
-    reception = re.search(r"(ресепшен|администратор|стойка).{0,80}(" + phone_pat.pattern + r")", text, flags=re.I)
-    restaurant= re.search(r"(ресторан|кафе|бар).{0,80}(" + phone_pat.pattern + r")", text, flags=re.I)
+    booking = re.search(r"(брони\w*|заказ\w*|онлайн\s*бронир\w*).{0,120}(" + phone_pat.pattern + r")", text, flags=re.I | re.S)
+    reception = re.search(r"(ресепшен|администратор|стойка).{0,100}(" + phone_pat.pattern + r")", text, flags=re.I)
+    restaurant = re.search(r"(ресторан|кафе|бар).{0,100}(" + phone_pat.pattern + r")", text, flags=re.I)
 
-    links = re.findall(r"(https?://[^\s]+)", text, flags=re.I)
-    opening_hours = extract_opening_hours(text)
-    geo = extract_geo_from_yandex_links(links)
+    all_links = unique_preserve(URL_RE.findall(text))
+    yandex_links = [l for l in all_links if "yandex" in l.lower()]
+    general_hours = extract_opening_hours(text)
 
-    def detect_whatsapp(phone_match: Optional[re.Match]) -> bool:
-        if not phone_match:
-            return False
-        # Берём окрестность вокруг найденного телефона, чтобы искать указание на
-        # WhatsApp именно для него, а не глобально в документе.
-        start, end = phone_match.span(2)
-        window = text[max(0, start - 120): min(len(text), end + 120)].lower()
-        if any(token in window for token in ("whatsapp", "ватсап")):
+    def window_around(match: re.Match, radius: int = 200) -> str:
+        start, end = match.span(2)
+        return text[max(0, start - radius): min(len(text), end + radius)]
+
+    def links_from_context(ctx: str) -> List[str]:
+        return unique_preserve(URL_RE.findall(ctx))
+
+    def detect_whatsapp_context(focus_text: str, links_ctx: List[str], raw_phone: str) -> bool:
+        if any("wa.me" in l.lower() or "whatsapp" in l.lower() for l in links_ctx):
             return True
-        return any("wa.me" in l.lower() or "whatsapp" in l.lower() for l in links)
+        sanitized = "".join(DIGITS_RE.findall(raw_phone))
+        if not sanitized:
+            return False
+        for match in re.finditer(r"whatsapp|ватсап", focus_text, flags=re.I):
+            start = max(0, match.start() - 40)
+            end = min(len(focus_text), match.end() + 40)
+            snippet = focus_text[start:end]
+            digits_near = "".join(DIGITS_RE.findall(snippet))
+            if sanitized in digits_near:
+                return True
+        return False
 
-    def pack_contact(contact_id, ctype, title, phone_match):
+    def normalize_context(ctx: str) -> str:
+        return re.sub(r"\s+", " ", ctx).strip()
+
+    def pack_contact(contact_id: str, ctype: str, title: str, phone_match: Optional[re.Match], keywords_extra: Optional[List[str]] = None):
         if not phone_match:
             return
         raw = phone_match.group(2)
-        phones = [raw]
+        ctx = window_around(phone_match)
+        ctx_clean = normalize_context(ctx)
+        local_links = links_from_context(ctx)
+        hours_local = extract_opening_hours(ctx)
+        hours = hours_local or (general_hours if ctype in {"booking", "reception"} else None)
+        sentence = sentence_with_fragment(ctx_clean, raw)
+        start, end = phone_match.span(2)
+        focus_raw = text[max(0, start - 80): min(len(text), end + 80)]
+        focus_clean = normalize_context(focus_raw)
+        has_wa = detect_whatsapp_context(focus_clean, local_links, raw)
+        if not has_wa and sentence:
+            has_wa = bool(re.search(r"whatsapp|ватсап", sentence, flags=re.I))
         phones_norm = list(filter(None, [normalize_phone_e164(raw)]))
-        has_wa = detect_whatsapp(phone_match)
+        base_text = sentence or ctx_clean or f"{title}: {raw}"
+        if hours and hours not in base_text:
+            suffix = "" if base_text.endswith(".") else "."
+            base_text = f"{base_text}{suffix} Часы: {hours}"
+        keywords = ["контакты", ctype, "телефон"]
+        if has_wa:
+            keywords.append("whatsapp")
+        if keywords_extra:
+            keywords.extend(keywords_extra)
         entries.append({
             "id": contact_id,
             "category": "contacts",
             "contact_type": ctype,
             "title": title,
             "phone": raw,
-            "phones": phones,
+            "phones": [raw],
             "phones_norm": phones_norm,
-            "hours": opening_hours,
-            "opening_hours": opening_hours,
+            "hours": hours,
+            "opening_hours": hours,
             "whatsapp": has_wa,
-            "links": links,
-            "geo": geo,
-            "text": f"{title}: {raw}" + (f"; часы: {opening_hours}" if opening_hours else ""),
-            "keywords": ["контакты", ctype, "телефон"] + (["whatsapp"] if has_wa else []),
+            "links": local_links,
+            "geo": None,
+            "text": base_text,
+            "keywords": sorted(set(keywords)),
             "source": "Наши контакты"
         })
 
-    pack_contact("contacts:booking", "booking", "Контакты для бронирования", booking)
-    pack_contact("contacts:reception", "reception", "Телефон ресепшена", reception)
-    pack_contact("contacts:restaurant", "restaurant", "Телефон ресторана", restaurant)
+    pack_contact("contacts:booking", "booking", "Контакты для бронирования", booking, keywords_extra=["бронирование"])
+    pack_contact("contacts:reception", "reception", "Телефон ресепшена", reception, keywords_extra=["ресепшен"])
+    pack_contact("contacts:restaurant", "restaurant", "Телефон ресторана", restaurant, keywords_extra=["ресторан"])
 
-    social = [l for l in links if any(x in l.lower() for x in ["instagram.com", "t.me"])]
-    if social:
+    social_links = [l for l in all_links if any(x in l.lower() for x in ("instagram.com", "t.me", "vk.com", "youtube.com"))]
+    if social_links:
         entries.append({
             "id": "contacts:social",
             "category": "contacts",
             "contact_type": "social",
             "title": "Социальные сети",
-            "links": social,
-            "text": " ; ".join(social),
-            "keywords": ["соцсети"] + (["instagram"] if any("instagram" in l for l in social) else []) + (["telegram"] if any("t.me" in l for l in social) else []),
+            "links": social_links,
+            "text": " ; ".join(social_links),
+            "keywords": sorted({"соцсети"} | ({"instagram"} if any("instagram" in l.lower() for l in social_links) else set()) | ({"telegram"} if any("t.me" in l.lower() for l in social_links) else set()) | ({"vk"} if any("vk.com" in l.lower() for l in social_links) else set())),
             "source": "Наши контакты"
         })
 
@@ -493,8 +558,8 @@ def build_contacts(text: str) -> List[Dict]:
             "category": "contacts",
             "contact_type": "directions",
             "title": "Как добраться на машине",
-            "links": [l for l in links if "yandex" in l.lower()],
-            "geo": geo,
+            "links": yandex_links,
+            "geo": extract_geo_from_yandex_links(yandex_links),
             "text": re.sub(r"\s+", " ", m_dir.group(1)).strip(),
             "keywords": ["как добраться", "машина", "маршрут", "навигатор", "яндекс"],
             "source": "Наши контакты"
@@ -502,58 +567,224 @@ def build_contacts(text: str) -> List[Dict]:
 
     return entries
 
-def build_hotel(text: str) -> List[Dict]:
-    entries = []
-    m_reviews = re.search(r"(https?://yandex[^\s]+)", text, flags=re.I)
-    entries.append({
-        "id": "hotel:about",
-        "category": "hotel",
+HOTEL_SECTION_META = {
+    "about": {
         "subcategory": "Общее описание",
         "title": "Общее описание отеля",
-        "text": ("Мы — загородный эко-отель «Усадьба Четыре Сезона». В отеле ежегодно отдыхают более 3500 гостей."
-                 + (f" Отзывы: {m_reviews.group(1)}." if m_reviews else "")),
-        "keywords": ["эко-отель", "гости", "отзывы"],
-        "source": "Описание отеля и доступных услуг"
-    })
+        "keywords": {"эко-отель", "отель", "загородный", "отдых"},
+    },
+    "audience": {
+        "subcategory": "Кому подходит отдых",
+        "title": "Кому подходит отдых",
+        "keywords": {"семьи", "пары", "друзья", "тимбилдинг"},
+    },
+    "location": {
+        "subcategory": "Расположение",
+        "title": "Расположение",
+        "keywords": {"расположение", "локация", "Минское шоссе", "Можайский район", "деревня Власово", "100 км"},
+    },
+    "territory": {
+        "subcategory": "Территория",
+        "title": "Территория",
+        "keywords": {"территория", "га", "тишина", "огороженная"},
+    },
+    "services": {
+        "subcategory": "Услуги и инфраструктура",
+        "title": "Услуги и инфраструктура",
+        "keywords": {"услуги", "активности", "инфраструктура", "развлечения"},
+        "use_heading_title": True,
+    },
+    "dining": {
+        "subcategory": "Питание и рестораны",
+        "title": "Питание и рестораны",
+        "keywords": {"ресторан", "питание", "кафе", "бар", "завтрак"},
+        "use_heading_title": True,
+    },
+    "wellness": {
+        "subcategory": "SPA и бани",
+        "title": "SPA и бани",
+        "keywords": {"баня", "сауна", "spa", "wellness"},
+        "use_heading_title": True,
+    },
+    "kids": {
+        "subcategory": "Для детей",
+        "title": "Инфраструктура для детей",
+        "keywords": {"дети", "семейный", "игровая"},
+        "use_heading_title": True,
+    },
+    "events": {
+        "subcategory": "Мероприятия и события",
+        "title": "Мероприятия и события",
+        "keywords": {"мероприятия", "свадьба", "банкет", "тимбилдинг"},
+        "use_heading_title": True,
+    },
+    "nature": {
+        "subcategory": "Отдых на природе",
+        "title": "Отдых на природе",
+        "keywords": {"природа", "лес", "панорама", "тишина"},
+        "use_heading_title": True,
+    },
+}
 
-    for para in text.split("\n"):
-        if "подойдет" in para.lower():
-            entries.append({
-                "id": "hotel:audience",
-                "category": "hotel",
-                "subcategory": "Кому подходит отдых",
-                "title": "Кому подходит отдых",
-                "text": para.strip(),
-                "keywords": ["семьи", "пары", "друзья", "тимбилдинг"],
-                "source": "Описание отеля и доступных услуг"
-            })
-            break
+HOTEL_SECTION_ORDER = [
+    "about",
+    "audience",
+    "location",
+    "territory",
+    "services",
+    "dining",
+    "wellness",
+    "kids",
+    "events",
+    "nature",
+]
 
-    m_loc = re.search(r"(Мы расположены[^\n\.]*\.)", text, flags=re.S)
-    if m_loc:
-        entries.append({
-            "id": "hotel:location",
+
+def is_heading_candidate(line: str) -> bool:
+    if not line:
+        return False
+    stripped = line.strip()
+    if len(stripped) > 80:
+        return False
+    if stripped.endswith(":"):
+        return True
+    if any(ch in stripped for ch in ".!?;:"):
+        return False
+    words = stripped.split()
+    if not words:
+        return False
+    return all(word.isupper() or (len(word) > 1 and word[0].isupper() and word[1:].islower()) for word in words)
+
+
+def classify_hotel_paragraph(text: str, heading: Optional[str]) -> List[str]:
+    heading_lower = (heading or "").lower()
+    lower = text.lower()
+    combined = f"{heading_lower} {lower}".strip()
+
+    if "подойдет" in lower or "кому подходит" in heading_lower:
+        return ["audience"]
+
+    if any(token in combined for token in ("располож", "локац", "адрес", "находит", "доехать", "маршрут", "км от", "дорог")):
+        return ["location"]
+
+    keys: List[str] = []
+
+    if any(token in combined for token in ("территор", "га", "участок", "гектар")):
+        keys.append("territory")
+
+    if any(token in combined for token in ("услуг", "инфраструктур", "активн", "развлеч", "сервис", "спорт", "прокат", "аренд", "оборуд", "конференц", "катан", "каток", "экскурс", "бассейн")):
+        keys.append("services")
+
+    if any(token in combined for token in ("питан", "ресторан", "кафе", "бар", "меню", "завтрак", "кухн", "гриль", "банкета")):
+        keys.append("dining")
+
+    if any(token in combined for token in ("баня", "сауна", "спа", "spa", "хамам", "джакузи", "массаж", "wellness", "купель")):
+        keys.append("wellness")
+
+    if any(token in combined for token in ("дет", "аниматор", "игров", "площадк", "семейн", "подрост")):
+        keys.append("kids")
+
+    if any(token in combined for token in ("меропр", "свадь", "банкет", "тимбилдинг", "корпоратив", "ивент", "конференц")):
+        keys.append("events")
+
+    if any(token in combined for token in ("природ", "лес", "озеро", "тишин", "воздух", "прогулк", "панорам")):
+        keys.append("nature")
+
+    if not keys:
+        return ["about"]
+    return keys
+
+
+def build_hotel(text: str) -> List[Dict]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    sections: List[Tuple[Optional[str], List[str]]] = []
+    current_heading: Optional[str] = None
+    current_body: List[str] = []
+
+    for line in lines:
+        if is_heading_candidate(line):
+            if current_body:
+                sections.append((current_heading, current_body))
+                current_body = []
+            current_heading = line.rstrip(":").strip()
+        else:
+            current_body.append(line)
+
+    if current_body:
+        sections.append((current_heading, current_body))
+
+    entries_map: Dict[str, Dict] = {}
+
+    for heading, body_parts in sections:
+        for paragraph in body_parts:
+            keys = classify_hotel_paragraph(paragraph, heading)
+            for key in keys:
+                meta = HOTEL_SECTION_META.get(key, {
+                    "subcategory": key.title(),
+                    "title": key.title(),
+                    "keywords": set(),
+                })
+                entry = entries_map.setdefault(key, {
+                    "subcategory": meta["subcategory"],
+                    "title": meta["title"],
+                    "title_override": False,
+                    "parts": [],
+                    "keywords": set(meta.get("keywords", set())),
+                })
+                if heading and meta.get("use_heading_title") and not entry["title_override"]:
+                    entry["title"] = heading
+                    entry["title_override"] = True
+                if paragraph not in entry["parts"]:
+                    entry["parts"].append(paragraph)
+                entry["keywords"].update(gen_keywords(paragraph))
+
+    results: List[Dict] = []
+    seen_keys = set()
+
+    for key in HOTEL_SECTION_ORDER:
+        entry = entries_map.get(key)
+        if not entry:
+            continue
+        text_body = " ".join(entry["parts"]).strip()
+        if not text_body:
+            continue
+        meta = HOTEL_SECTION_META.get(key, {})
+        keywords_base = set(entry.get("keywords", set()))
+        keywords = sorted(set(gen_keywords(text_body, extra=list(meta.get("keywords", [])))) | keywords_base)
+        results.append({
+            "id": f"hotel:{key}",
             "category": "hotel",
-            "subcategory": "Расположение",
-            "title": "Расположение",
-            "text": re.sub(r"\s+", " ", m_loc.group(1)).strip(),
-            "keywords": ["расположение", "Минское шоссе", "Можайский район", "деревня Власово", "100 км"],
-            "source": "Описание отеля и доступных услуг"
+            "subcategory": entry["subcategory"],
+            "title": entry["title"],
+            "text": text_body,
+            "keywords": keywords,
+            "source": "Описание отеля и доступных услуг",
+        })
+        seen_keys.add(key)
+
+    for key, entry in entries_map.items():
+        if key in seen_keys:
+            continue
+        text_body = " ".join(entry["parts"]).strip()
+        if not text_body:
+            continue
+        meta = HOTEL_SECTION_META.get(key, {})
+        keywords_base = set(entry.get("keywords", set()))
+        keywords = sorted(set(gen_keywords(text_body, extra=list(meta.get("keywords", [])))) | keywords_base)
+        results.append({
+            "id": f"hotel:{key}",
+            "category": "hotel",
+            "subcategory": entry["subcategory"],
+            "title": entry["title"],
+            "text": text_body,
+            "keywords": keywords,
+            "source": "Описание отеля и доступных услуг",
         })
 
-    m_terr = re.search(r"(Территория[^\n]*\d+\s*га[^\n]*)", text, flags=re.I)
-    if m_terr:
-        entries.append({
-            "id": "hotel:territory",
-            "category": "hotel",
-            "subcategory": "Территория",
-            "title": "Территория",
-            "text": re.sub(r"\s+", " ", m_terr.group(1)).strip(),
-            "keywords": ["территория", "га", "тихо", "огороженная"],
-            "source": "Описание отеля и доступных услуг"
-        })
-
-    return entries
+    return results
 
 def build_loyalty(text: str) -> List[Dict]:
     entries = [{
@@ -680,7 +911,7 @@ def build_faq(text: str) -> List[Dict]:
             tags = tags_from_text(q_clean) + tags_from_text(a_clean)
 
             entries.append({
-                "id": f"faq:{abs(hash(q_clean))}",
+                "id": f"faq:{stable_hash(q_clean + '|' + a_clean)}",
                 "category": "faq",
                 "question": q_clean,
                 "answer": a_clean,
