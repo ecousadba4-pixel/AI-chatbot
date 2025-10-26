@@ -53,6 +53,7 @@ QDRANT_HTTPS = os.getenv("QDRANT_HTTPS", "false").lower() in ("1", "true", "yes"
 AMVERA_GPT_URL = os.getenv(
     "AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
 )
+AMVERA_GPT_MODEL = os.getenv("AMVERA_GPT_MODEL", "gpt-5").strip() or "gpt-5"
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
 AMVERA_AUTH_HEADER = os.getenv("AMVERA_AUTH_HEADER", "X-Auth-Token")
 AMVERA_AUTH_PREFIX = os.getenv("AMVERA_AUTH_PREFIX", "Bearer")
@@ -195,6 +196,7 @@ qdrant_client = QdrantClient(
 print(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (https={QDRANT_HTTPS})")
 print(f"✅ Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
 print("🔢 Embedding dimension:", model.get_sentence_embedding_dimension())
+print(f"🤖 Amvera GPT endpoint: {AMVERA_GPT_URL} (model={AMVERA_GPT_MODEL})")
 
 COLLECTIONS = _filter_existing_collections(
     qdrant_client,
@@ -299,7 +301,7 @@ def generate_response(context: str, question: str) -> str:
 
         headers = _build_amvera_headers(normalized_token)
         payload = {
-            "model": "gpt-5",
+            "model": AMVERA_GPT_MODEL,
             "messages": [
                 {
                     "role": "system",

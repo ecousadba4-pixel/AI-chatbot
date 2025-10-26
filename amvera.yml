@@ -44,6 +44,7 @@ run:
     # --- Amvera GPT (твой шлюз) ---
     AMVERA_GPT_URL: "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
     AMVERA_GPT_TOKEN: "${AMVERA_GPT_TOKEN}"
+    AMVERA_GPT_MODEL: "${AMVERA_GPT_MODEL}"
 
     # --- Shelter PMS ---
     SHELTER_TOKEN: "${SHELTER_TOKEN}"
