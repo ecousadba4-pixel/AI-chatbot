@@ -265,9 +265,13 @@ def generate_response(context: str, question: str) -> str:
             print("🎯 Ответ из кэша Redis")
             return cached
 
+        if not AMVERA_GPT_TOKEN:
+            print("⚠️ Не задан токен доступа AMVERA_GPT_TOKEN")
+            return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+
         headers = {
             "X-Auth-Token": f"Bearer {AMVERA_GPT_TOKEN}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         payload = {
             "model": "gpt-5",
