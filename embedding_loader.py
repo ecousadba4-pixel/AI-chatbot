@@ -14,17 +14,46 @@ PathLike = Union[str, os.PathLike[str]]
 def _expand_candidate_paths(
     candidate_paths: Optional[Iterable[Optional[PathLike]]],
 ) -> list[str]:
-    """Return a filtered list of candidate paths that exist on disk."""
+    """Вернуть список существующих путей до модели.
+
+    Переменные окружения нередко содержат относительные пути (например,
+    ``app/data/...``). На продакшене рабочей директорией чаще всего является
+    ``/app``, поэтому такой путь по умолчанию интерпретируется как
+    ``/app/app/data/...`` и не проходит проверку ``os.path.exists``.
+
+    Чтобы не требовать строгого указания абсолютного пути, дополнительно
+    проверяем несколько базовых директорий (``cwd``, каталог проекта и корень
+    файловой системы), присоединяя к ним относительный путь и отбирая только
+    реально существующие варианты.
+    """
+
     if not candidate_paths:
         return []
 
+    project_root = Path(__file__).resolve().parent
+    fallback_roots = [Path.cwd(), project_root, project_root.parent, Path("/")]
+
     paths: list[str] = []
+    seen: set[str] = set()
+
     for path in candidate_paths:
         if not path:
             continue
-        expanded = os.path.expanduser(os.path.expandvars(os.fspath(path)))
-        if os.path.exists(expanded):
-            paths.append(expanded)
+
+        expanded = Path(os.path.expanduser(os.path.expandvars(os.fspath(path))))
+        candidates = [expanded]
+
+        if not expanded.is_absolute():
+            candidates.extend(base / expanded for base in fallback_roots)
+
+        for candidate in candidates:
+            candidate_str = os.fspath(candidate)
+            if candidate_str in seen:
+                continue
+            if candidate.exists():
+                seen.add(candidate_str)
+                paths.append(candidate_str)
+
     return paths
 
 
