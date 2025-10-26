@@ -125,22 +125,45 @@ def resolve_embedding_model(
 
     expanded_paths = _expand_candidate_paths(search_candidates)
 
+    summary: list[str] = []
+
+    if expanded_paths:
+        print("🔎 Проверяем локальные пути модели:")
     for path in expanded_paths:
+        print(f"  • 🔍 {path}")
         try:
+            print(f"    ↪️ Пытаемся восстановить шарды модели в {path}")
             _maybe_reassemble_shards(Path(path))
-        except Exception:
-            # Если восстановление шардов не удалось, пробуем загрузить модель
-            # как есть, чтобы не скрывать оригинальную ошибку SentenceTransformer.
-            pass
+        except Exception as shard_error:
+            print(
+                "    ⚠️ Не удалось восстановить шарды:",
+                shard_error,
+            )
+            summary.append(f"⚠️ {path} — ошибка восстановления шардов: {shard_error}")
+        else:
+            summary.append(f"ℹ️ {path} — восстановление шардов не требуется или завершено")
 
         try:
             model = SentenceTransformer(path)
             setattr(model, "_resolved_from", path)
             print(f"🧠 Используем локальную модель эмбеддингов из {path}")
+            summary.append(f"✅ {path} — модель успешно загружена")
+            print("📋 Сводка по локальным путям:")
+            for item in summary:
+                print(f"  • {item}")
             return model
-        except Exception:
+        except Exception as load_error:
+            print(f"    ❌ Ошибка загрузки модели из {path}: {load_error}")
+            summary.append(f"❌ {path} — ошибка загрузки: {load_error}")
             # Path exists but does not contain a valid model.
             continue
+
+    if expanded_paths:
+        print("📋 Сводка по локальным путям:")
+        for item in summary:
+            print(f"  • {item}")
+    else:
+        print("⚠️ Список локальных директорий пуст — переходим к загрузке по имени модели.")
 
     if not allow_download:
         searched = "\n".join(f" - {p}" for p in expanded_paths)
