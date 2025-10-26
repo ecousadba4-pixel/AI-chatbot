@@ -50,7 +50,9 @@ QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_HTTPS = os.getenv("QDRANT_HTTPS", "false").lower() in ("1", "true", "yes")
 
-AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL")
+AMVERA_GPT_URL = os.getenv(
+    "AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
+)
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
 
 REDIS_HOST = os.getenv("REDIS_HOST")
@@ -264,15 +266,15 @@ def generate_response(context: str, question: str) -> str:
             return cached
 
         headers = {
-            "Authorization": f"Bearer {AMVERA_GPT_TOKEN}",
+            "X-Auth-Token": f"Bearer {AMVERA_GPT_TOKEN}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "gpt",
+            "model": "gpt-5",
             "messages": [
                 {
                     "role": "system",
-                    "content": (
+                    "text": (
                         "Ты — ассистент загородного отеля усадьбы 'Четыре Сезона'. "
                         "Отвечай гостям кратко, дружелюбно и только на основе предоставленной информации. "
                         "Если информации нет в контексте, вежливо скажи об этом."
@@ -280,14 +282,32 @@ def generate_response(context: str, question: str) -> str:
                 },
                 {
                     "role": "user",
-                    "content": f"Контекст:\n{context}\n\nВопрос гостя: {question}"
+                    "text": f"Контекст:\n{context}\n\nВопрос гостя: {question}"
                 }
             ]
         }
 
         r = requests.post(AMVERA_GPT_URL, headers=headers, json=payload, timeout=60)
         if r.status_code == 200:
-            answer = r.json()["choices"][0]["message"]["content"]
+            data = r.json()
+            answer = None
+
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message") or {}
+                    if isinstance(message, dict):
+                        answer = (
+                            message.get("content")
+                            or message.get("text")
+                        )
+
+            if not answer:
+                answer = data.get("output_text") or data.get("text")
+
+            if not answer:
+                raise ValueError("Не удалось извлечь текст ответа из ответа модели")
             redis_client.setex(cache_key, 3600, answer)  # TTL 1 час
             print("💾 Ответ сохранён в кэш Redis")
             return answer
