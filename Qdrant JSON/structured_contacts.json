@@ -4,25 +4,24 @@
     "category": "contacts",
     "contact_type": "booking",
     "title": "Контакты для бронирования",
-    "phone": "+7 (925) 636-22-70",
+    "phone": "+7 (925) 55-33-700",
     "phones": [
-      "+7 (925) 636-22-70"
+      "+7 (925) 55-33-700"
     ],
     "phones_norm": [
-      "+79256362270"
+      "+79255533700"
     ],
     "hours": null,
     "opening_hours": null,
-    "whatsapp": false,
-    "links": [
-      "https://instagram.com/usadba4seasons/",
-      "https://t.me/usadba4seasons"
-    ],
+    "whatsapp": true,
+    "links": [],
     "geo": null,
-    "text": "Контакты для бронирования: +7 (925) 636-22-70",
+    "text": "Наши контакты По вопросам бронирования номера или уже сделанным бронированиям звоните по номеру +7 (925) 55-33-700.",
     "keywords": [
-      "контакты",
       "booking",
+      "whatsapp",
+      "бронирование",
+      "контакты",
       "телефон"
     ],
     "source": "Наши контакты"
@@ -41,18 +40,15 @@
     ],
     "hours": null,
     "opening_hours": null,
-    "whatsapp": true,
-    "links": [
-      "https://instagram.com/usadba4seasons/",
-      "https://t.me/usadba4seasons"
-    ],
+    "whatsapp": false,
+    "links": [],
     "geo": null,
-    "text": "Телефон ресепшена: +7 (926) 469-96-86",
+    "text": "Телефон Ресепшена +7 (926) 469-96-86.",
     "keywords": [
-      "контакты",
       "reception",
-      "телефон",
-      "whatsapp"
+      "контакты",
+      "ресепшен",
+      "телефон"
     ],
     "source": "Наши контакты"
   },
@@ -76,10 +72,11 @@
       "https://t.me/usadba4seasons"
     ],
     "geo": null,
-    "text": "Телефон ресторана: +7 (925) 636-22-70",
+    "text": "Номер телефона ресторана +7 (925) 636-22-70, звонить можно в часы работы ресторана.",
     "keywords": [
-      "контакты",
       "restaurant",
+      "контакты",
+      "ресторан",
       "телефон"
     ],
     "source": "Наши контакты"
@@ -95,9 +92,9 @@
     ],
     "text": "https://instagram.com/usadba4seasons/ ; https://t.me/usadba4seasons",
     "keywords": [
-      "соцсети",
       "instagram",
-      "telegram"
+      "telegram",
+      "соцсети"
     ],
     "source": "Наши контакты"
   },
