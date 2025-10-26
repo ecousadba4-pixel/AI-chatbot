@@ -1,16 +1,17 @@
+import json
 import os
 import re
 import hashlib
-import requests
-import pymorphy3
+from datetime import datetime
+from typing import Any, Iterable
+
 import numpy as np
+import pymorphy3
 import redis
-import json
-from flask import Flask, request, jsonify
+import requests
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from datetime import datetime
 
 from embedding_loader import resolve_embedding_model
 from price_dialog import handle_price_dialog
@@ -25,6 +26,7 @@ CORS(app)
 # ENV VARIABLES
 # ----------------------------
 DEFAULT_COLLECTIONS = ["hotel_knowledge"]
+ERROR_MESSAGE = "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
 
 # Сопоставление старых названий коллекций новым. Помогает пережить переименования
 # без необходимости немедленно менять переменные окружения.
@@ -222,43 +224,63 @@ def encode(text: str) -> list:
         vec = vec.tolist()
     return vec
 
-def search_all_collections(query_embedding: list, limit: int = 5) -> list:
+def _extract_payload_text(payload: dict[str, Any]) -> str:
+    """Извлечь человекочитаемый текст из результата Qdrant."""
+
+    text = payload.get("text") or payload.get("text_bm25") or ""
+    if text:
+        return text
+
+    raw = payload.get("raw")
+    if isinstance(raw, dict):
+        text_blocks = raw.get("text_blocks")
+        if isinstance(text_blocks, dict):
+            combined = "\n".join(str(v) for v in text_blocks.values() if v)
+            if combined:
+                return combined
+
+        raw_text = raw.get("text")
+        if raw_text:
+            return raw_text
+
+        if raw.get("category") == "faq":
+            question = raw.get("question") or ""
+            answer = raw.get("answer") or ""
+            if question or answer:
+                return f"Вопрос: {question}\nОтвет: {answer}"
+
+    return ""
+
+
+def search_all_collections(query_embedding: Iterable[float], limit: int = 5) -> list[dict[str, Any]]:
     """Поиск по всем коллекциям с объединением результатов."""
-    all_results = []
+
+    aggregated: list[dict[str, Any]] = []
+    embedding_vector = list(query_embedding)
+
     for coll in COLLECTIONS:
         try:
             search = qdrant_client.search(
                 collection_name=coll,
-                query_vector=query_embedding,
-                limit=limit
+                query_vector=embedding_vector,
+                limit=limit,
             )
-            for hit in search:
-                payload = hit.payload or {}
-                text = payload.get("text") or payload.get("text_bm25") or ""
-                if not text and isinstance(payload.get("raw"), dict):
-                    # Попробуем собрать fallback из известных полей.
-                    raw = payload["raw"]
-                    text_blocks = raw.get("text_blocks")
-                    if isinstance(text_blocks, dict):
-                        text = "\n".join(str(v) for v in text_blocks.values() if v)
-                    if not text:
-                        text = raw.get("text", "")
-                    if not text and raw.get("category") == "faq":
-                        q = raw.get("question")
-                        a = raw.get("answer")
-                        if q or a:
-                            text = "Вопрос: {}\nОтвет: {}".format(q or "", a or "")
+        except Exception as exc:
+            print(f"⚠️ Ошибка поиска в {coll}: {exc}")
+            continue
 
-                all_results.append({
+        for hit in search:
+            payload = hit.payload or {}
+            aggregated.append(
+                {
                     "collection": coll,
                     "score": hit.score,
-                    "text": text
-                })
-        except Exception as e:
-            print(f"⚠️ Ошибка поиска в {coll}: {e}")
-    # Сортируем по score (убывание)
-    all_results.sort(key=lambda x: x["score"], reverse=True)
-    return all_results[:limit]
+                    "text": _extract_payload_text(payload),
+                }
+            )
+
+    aggregated.sort(key=lambda item: item["score"], reverse=True)
+    return aggregated[:limit]
 
 def _normalize_amvera_token(raw_token: str | None) -> str:
     """Очистить токен: убрать префикс ``Bearer`` и лишние пробелы."""
@@ -350,8 +372,29 @@ def _log_amvera_error(response: requests.Response) -> None:
         )
 
 
+def _extract_amvera_answer(data: dict[str, Any]) -> str:
+    """Попытаться достать текст ответа из структуры ответа Amvera."""
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message") or {}
+            if isinstance(message, dict):
+                answer = message.get("content") or message.get("text")
+                if answer:
+                    return str(answer)
+
+    fallback = data.get("output_text") or data.get("text")
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback
+
+    raise ValueError("Не удалось извлечь текст ответа из ответа модели")
+
+
 def generate_response(context: str, question: str) -> str:
     """Запрос в Amvera GPT-модель + кэш Redis."""
+
     try:
         cache_key = hashlib.md5(f"{question}:{context}".encode()).hexdigest()
         cached = redis_client.get(cache_key)
@@ -360,9 +403,8 @@ def generate_response(context: str, question: str) -> str:
             return cached
 
         normalized_token = _ensure_amvera_token()
-
         if not normalized_token:
-            return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+            return ERROR_MESSAGE
 
         payload = _build_amvera_payload(AMVERA_GPT_MODEL, context, question)
 
@@ -375,37 +417,34 @@ def generate_response(context: str, question: str) -> str:
             )
         except requests.RequestException as exc:
             print(f"⚠️ Не удалось выполнить запрос к Amvera API: {exc}")
-            return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+            return ERROR_MESSAGE
 
-        if response.ok:
+        if not response.ok:
+            _log_amvera_error(response)
+            return ERROR_MESSAGE
+
+        try:
             data = response.json()
-            answer = None
+        except ValueError:
+            print("⚠️ Не удалось распарсить ответ Amvera как JSON")
+            return ERROR_MESSAGE
 
-            choices = data.get("choices")
-            if isinstance(choices, list) and choices:
-                first_choice = choices[0]
-                if isinstance(first_choice, dict):
-                    message = first_choice.get("message") or {}
-                    if isinstance(message, dict):
-                        answer = (
-                            message.get("content")
-                            or message.get("text")
-                        )
+        try:
+            answer = _extract_amvera_answer(data)
+        except ValueError as exc:
+            print(f"⚠️ {exc}")
+            return ERROR_MESSAGE
 
-            if not answer:
-                answer = data.get("output_text") or data.get("text")
-
-            if not answer:
-                raise ValueError("Не удалось извлечь текст ответа из ответа модели")
+        try:
             redis_client.setex(cache_key, 3600, answer)  # TTL 1 час
+        except Exception as exc:  # pragma: no cover - сбой Redis не критичен для ответа
+            print(f"⚠️ Не удалось сохранить ответ в Redis: {exc}")
+        else:
             print("💾 Ответ сохранён в кэш Redis")
-            return answer
-
-        _log_amvera_error(response)
-        return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
-    except Exception as e:
-        print(f"⚠️ Ошибка при обращении к модели: {e}")
-        return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+        return answer
+    except Exception as exc:  # pragma: no cover - непредвиденные ошибки
+        print(f"⚠️ Ошибка при обращении к модели: {exc}")
+        return ERROR_MESSAGE
 
 # ----------------------------
 # ROUTES
