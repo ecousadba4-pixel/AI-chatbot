@@ -54,6 +54,8 @@ AMVERA_GPT_URL = os.getenv(
     "AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
 )
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
+AMVERA_AUTH_HEADER = os.getenv("AMVERA_AUTH_HEADER", "X-Auth-Token")
+AMVERA_AUTH_PREFIX = os.getenv("AMVERA_AUTH_PREFIX", "Bearer")
 
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -256,6 +258,30 @@ def search_all_collections(query_embedding: list, limit: int = 5) -> list:
     all_results.sort(key=lambda x: x["score"], reverse=True)
     return all_results[:limit]
 
+def _normalize_amvera_token(raw_token: str | None) -> str:
+    """Очистить токен: убрать префикс ``Bearer`` и лишние пробелы."""
+
+    token = (raw_token or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[len("bearer ") :].lstrip()
+    return token
+
+
+def _build_amvera_headers(token: str) -> dict[str, str]:
+    """Сформировать заголовки авторизации по соглашениям Amvera."""
+
+    prefix = AMVERA_AUTH_PREFIX.strip()
+    if prefix:
+        header_value = f"{prefix} {token}"
+    else:
+        header_value = token
+
+    return {
+        AMVERA_AUTH_HEADER: header_value,
+        "Content-Type": "application/json",
+    }
+
+
 def generate_response(context: str, question: str) -> str:
     """Запрос в Amvera GPT-модель + кэш Redis."""
     try:
@@ -265,14 +291,13 @@ def generate_response(context: str, question: str) -> str:
             print("🎯 Ответ из кэша Redis")
             return cached
 
-        if not AMVERA_GPT_TOKEN:
+        normalized_token = _normalize_amvera_token(AMVERA_GPT_TOKEN)
+
+        if not normalized_token:
             print("⚠️ Не задан токен доступа AMVERA_GPT_TOKEN")
             return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
 
-        headers = {
-            "X-Auth-Token": f"Bearer {AMVERA_GPT_TOKEN}",
-            "Content-Type": "application/json",
-        }
+        headers = _build_amvera_headers(normalized_token)
         payload = {
             "model": "gpt-5",
             "messages": [
