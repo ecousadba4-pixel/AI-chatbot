@@ -90,6 +90,11 @@ def _maybe_reassemble_shards(model_dir: Path) -> None:
         if not parts:
             continue
 
+        print(
+            "🧩 Найдены части файла",
+            target_name,
+            f"в каталоге {model_dir} — объединяем ({len(parts)} шт.)",
+        )
         temp_path = target_path.parent / f"{target_path.name}.tmp"
         with open(temp_path, "wb") as target_file:
             for part in parts:
@@ -97,6 +102,7 @@ def _maybe_reassemble_shards(model_dir: Path) -> None:
                     shutil.copyfileobj(part_file, target_file)
 
         os.replace(temp_path, target_path)
+        print(f"✅ Файл {target_path.name} восстановлен из частей")
 
 
 def resolve_embedding_model(
@@ -119,7 +125,11 @@ def resolve_embedding_model(
 
     expanded_paths = _expand_candidate_paths(search_candidates)
 
+    tried_local = False
+
     for path in expanded_paths:
+        tried_local = True
+        print(f"🔍 Проверяем локальный путь {path}")
         try:
             _maybe_reassemble_shards(Path(path))
         except Exception:
@@ -130,9 +140,16 @@ def resolve_embedding_model(
         try:
             model = SentenceTransformer(path)
             setattr(model, "_resolved_from", path)
+            print(f"🧠 Используем локальную модель эмбеддингов из {path}")
             return model
-        except Exception:
+        except Exception as exc:
             # Path exists but does not contain a valid model.
+            print(
+                "⚠️ Не удалось загрузить модель из локального пути",
+                path,
+                "из-за ошибки:",
+                exc,
+            )
             continue
 
     if not allow_download:
@@ -144,8 +161,20 @@ def resolve_embedding_model(
             f"{searched if searched else ' - (список путей пуст)'}"
         )
 
+    if not tried_local:
+        print("ℹ️ Список локальных путей пуст — переходим к загрузке по имени")
+    else:
+        print(
+            "🌐 Подходящая локальная модель не найдена. Рассмотрены пути:\n"
+            + "\n".join(f" - {p}" for p in expanded_paths)
+        )
+    print(
+        "🌐 Локальные пути не содержат модель эмбеддингов, будет загружена по имени:",
+        model_name,
+    )
     model = SentenceTransformer(model_name)
     setattr(model, "_resolved_from", model_name)
+    print(f"🧠 Модель эмбеддингов загружена по имени {model_name}")
     return model
 
 
