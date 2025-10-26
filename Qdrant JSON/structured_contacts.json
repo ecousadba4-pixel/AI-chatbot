@@ -4,27 +4,26 @@
     "category": "contacts",
     "contact_type": "booking",
     "title": "Контакты для бронирования",
-    "phone": "+7 (926) 469-96-86",
+    "phone": "+7 (925) 636-22-70",
     "phones": [
-      "+7 (926) 469-96-86"
+      "+7 (925) 636-22-70"
     ],
     "phones_norm": [
-      "+79264699686"
+      "+79256362270"
     ],
     "hours": null,
     "opening_hours": null,
-    "whatsapp": true,
+    "whatsapp": false,
     "links": [
       "https://instagram.com/usadba4seasons/",
       "https://t.me/usadba4seasons"
     ],
     "geo": null,
-    "text": "Контакты для бронирования: +7 (926) 469-96-86",
+    "text": "Контакты для бронирования: +7 (925) 636-22-70",
     "keywords": [
       "контакты",
       "booking",
-      "телефон",
-      "whatsapp"
+      "телефон"
     ],
     "source": "Наши контакты"
   },
@@ -71,7 +70,7 @@
     ],
     "hours": null,
     "opening_hours": null,
-    "whatsapp": true,
+    "whatsapp": false,
     "links": [
       "https://instagram.com/usadba4seasons/",
       "https://t.me/usadba4seasons"
@@ -81,8 +80,7 @@
     "keywords": [
       "контакты",
       "restaurant",
-      "телефон",
-      "whatsapp"
+      "телефон"
     ],
     "source": "Наши контакты"
   },
