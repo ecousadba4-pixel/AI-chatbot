@@ -269,6 +269,18 @@ def _normalize_amvera_token(raw_token: str | None) -> str:
     return token
 
 
+def _ensure_amvera_token() -> str | None:
+    """Получить токен авторизации, аналогично ensure_api_key из скрипта проверки."""
+
+    token = _normalize_amvera_token(AMVERA_GPT_TOKEN)
+
+    if not token:
+        print("⚠️ Не задан токен доступа (AMVERA_GPT_TOKEN)")
+        return None
+
+    return token
+
+
 def _build_amvera_headers(token: str) -> dict[str, str]:
     """Сформировать заголовки авторизации по соглашениям Amvera."""
 
@@ -284,6 +296,60 @@ def _build_amvera_headers(token: str) -> dict[str, str]:
     }
 
 
+def _build_amvera_payload(model: str, context: str, question: str) -> dict[str, object]:
+    """Сформировать тело запроса по образцу из утилиты проверки API."""
+
+    return {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "text": (
+                    "Ты — ассистент загородного отеля усадьбы 'Четыре Сезона'. "
+                    "Отвечай гостям кратко, дружелюбно и только на основе предоставленной информации. "
+                    "Если информации нет в контексте, вежливо скажи об этом."
+                ),
+            },
+            {
+                "role": "user",
+                "text": f"Контекст:\n{context}\n\nВопрос гостя: {question}",
+            },
+        ],
+    }
+
+
+def _perform_amvera_request(
+    url: str,
+    token: str,
+    payload: dict[str, object],
+    timeout: float,
+) -> requests.Response:
+    """Выполнить HTTP-запрос к Amvera API так же, как в тестовой утилите."""
+
+    headers = _build_amvera_headers(token)
+    return requests.post(url, headers=headers, json=payload, timeout=timeout)
+
+
+def _log_amvera_error(response: requests.Response) -> None:
+    """Логирование ошибок API с подробностями по образцу скрипта проверки."""
+
+    print(
+        f"Запрос завершился ошибкой: {response.status_code} {response.reason}",
+    )
+    try:
+        error_json = response.json()
+    except ValueError:
+        error_json = {"raw": response.text}
+
+    print(json.dumps(error_json, ensure_ascii=False, indent=2))
+
+    if response.status_code == 403:
+        print(
+            "Подсказка: код 403 часто означает отсутствие доступа к выбранной модели. "
+            "Проверьте права доступа в Amvera или попробуйте выбрать другую модель.",
+        )
+
+
 def generate_response(context: str, question: str) -> str:
     """Запрос в Amvera GPT-модель + кэш Redis."""
     try:
@@ -293,34 +359,26 @@ def generate_response(context: str, question: str) -> str:
             print("🎯 Ответ из кэша Redis")
             return cached
 
-        normalized_token = _normalize_amvera_token(AMVERA_GPT_TOKEN)
+        normalized_token = _ensure_amvera_token()
 
         if not normalized_token:
-            print("⚠️ Не задан токен доступа AMVERA_GPT_TOKEN")
             return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
 
-        headers = _build_amvera_headers(normalized_token)
-        payload = {
-            "model": AMVERA_GPT_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "text": (
-                        "Ты — ассистент загородного отеля усадьбы 'Четыре Сезона'. "
-                        "Отвечай гостям кратко, дружелюбно и только на основе предоставленной информации. "
-                        "Если информации нет в контексте, вежливо скажи об этом."
-                    )
-                },
-                {
-                    "role": "user",
-                    "text": f"Контекст:\n{context}\n\nВопрос гостя: {question}"
-                }
-            ]
-        }
+        payload = _build_amvera_payload(AMVERA_GPT_MODEL, context, question)
 
-        r = requests.post(AMVERA_GPT_URL, headers=headers, json=payload, timeout=60)
-        if r.status_code == 200:
-            data = r.json()
+        try:
+            response = _perform_amvera_request(
+                AMVERA_GPT_URL,
+                normalized_token,
+                payload,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            print(f"⚠️ Не удалось выполнить запрос к Amvera API: {exc}")
+            return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+
+        if response.ok:
+            data = response.json()
             answer = None
 
             choices = data.get("choices")
@@ -342,9 +400,9 @@ def generate_response(context: str, question: str) -> str:
             redis_client.setex(cache_key, 3600, answer)  # TTL 1 час
             print("💾 Ответ сохранён в кэш Redis")
             return answer
-        else:
-            print(f"⚠️ Ошибка GPT API: {r.status_code} - {r.text}")
-            return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
+
+        _log_amvera_error(response)
+        return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
     except Exception as e:
         print(f"⚠️ Ошибка при обращении к модели: {e}")
         return "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
@@ -476,6 +534,86 @@ def debug_search():
         ]
     })
 
+
+@app.route("/api/debug/amvera", methods=["GET"])
+def debug_amvera():
+    """Проверка доступности Amvera GPT-модели."""
+
+    prompt = request.args.get("prompt", "Привет! Ответь 'ok'.")
+    model_name = request.args.get("model", AMVERA_GPT_MODEL).strip() or AMVERA_GPT_MODEL
+
+    token = _ensure_amvera_token()
+    if not token:
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Не задан токен (AMVERA_GPT_TOKEN)",
+            }
+        ), 503
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "text": "Ты — простая проверка доступа к API.",
+            },
+            {
+                "role": "user",
+                "text": prompt,
+            },
+        ],
+    }
+
+    try:
+        response = _perform_amvera_request(
+            AMVERA_GPT_URL,
+            token,
+            payload,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"Не удалось выполнить запрос: {exc}",
+                }
+            ),
+            502,
+        )
+
+    if response.ok:
+        try:
+            response_json = response.json()
+        except ValueError:
+            response_json = {"raw": response.text}
+        return jsonify(
+            {
+                "status": "ok",
+                "model": model_name,
+                "prompt": prompt,
+                "response": response_json,
+            }
+        )
+
+    _log_amvera_error(response)
+    try:
+        error_body = response.json()
+    except ValueError:
+        error_body = {"raw": response.text}
+    return (
+        jsonify(
+            {
+                "status": "error",
+                "message": "Amvera API вернул ошибку",
+                "http_status": response.status_code,
+                "details": error_body,
+            }
+        ),
+        response.status_code,
+    )
+
 @app.route("/api/debug/model", methods=["GET"])
 def debug_model():
     """Информация о модели эмбеддингов."""
@@ -504,6 +642,7 @@ def home():
             "/api/debug/qdrant",
             "/api/debug/redis",
             "/api/debug/search",
+            "/api/debug/amvera",
             "/api/debug/model",
             "/api/debug/status",
             "/health"
