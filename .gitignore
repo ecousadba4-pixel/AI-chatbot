@@ -1,0 +1,6 @@
+# Ignore JSON and DOCX files stored for convenience
+*.json
+*.docx
+
+# Ignore local Qdrant database directory
+Qdrant DB/
