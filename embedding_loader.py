@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
@@ -62,6 +63,42 @@ def _default_model_search_paths(model_name: str) -> list[str]:
     return candidates
 
 
+def _maybe_reassemble_shards(model_dir: Path) -> None:
+    """Собрать файлы модели, если они были разбиты на части.
+
+    На некоторых платформах загрузка отдельных файлов весов больше 200 МБ
+    запрещена, поэтому модель может быть сохранена набором ``*.partXX`` файлов.
+    ``SentenceTransformer`` ожидает итоговые файлы ``model.safetensors`` и
+    ``pytorch_model.bin`` с оригинальными именами, поэтому перед загрузкой мы
+    собираем их заново.
+    """
+
+    if not model_dir.is_dir():
+        return
+
+    shard_specs = {
+        "model.safetensors": "model.safetensors.part*",
+        "pytorch_model.bin": "pytorch_model.bin.part*",
+    }
+
+    for target_name, glob_pattern in shard_specs.items():
+        target_path = model_dir / target_name
+        if target_path.exists():
+            continue
+
+        parts = sorted(model_dir.glob(glob_pattern))
+        if not parts:
+            continue
+
+        temp_path = target_path.parent / f"{target_path.name}.tmp"
+        with open(temp_path, "wb") as target_file:
+            for part in parts:
+                with open(part, "rb") as part_file:
+                    shutil.copyfileobj(part_file, target_file)
+
+        os.replace(temp_path, target_path)
+
+
 def resolve_embedding_model(
     model_name: str,
     candidate_paths: Optional[Iterable[Optional[str]]] = None,
@@ -83,6 +120,13 @@ def resolve_embedding_model(
     expanded_paths = _expand_candidate_paths(search_candidates)
 
     for path in expanded_paths:
+        try:
+            _maybe_reassemble_shards(Path(path))
+        except Exception:
+            # Если восстановление шардов не удалось, пробуем загрузить модель
+            # как есть, чтобы не скрывать оригинальную ошибку SentenceTransformer.
+            pass
+
         try:
             model = SentenceTransformer(path)
             setattr(model, "_resolved_from", path)
