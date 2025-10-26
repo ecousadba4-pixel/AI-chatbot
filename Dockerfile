@@ -24,13 +24,11 @@ COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
-# Базовые утилиты и прогрев модели (если веса уже на месте)
-COPY embedding_loader.py ./embedding_loader.py
-COPY tools ./tools
-RUN python -m tools.preload_model
-
-# Код приложения
+# Код приложения и утилиты
 COPY . .
+
+# Прогрев модели (использует уже скопированные локальные веса, если они есть)
+RUN python -m tools.preload_model
 
 # Безопасность: нерутовый пользователь
 RUN useradd -m appuser && chown -R appuser:appuser /app
