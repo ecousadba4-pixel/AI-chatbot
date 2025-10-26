@@ -649,7 +649,7 @@ def _collect_public_endpoints() -> list[str]:
 
     collected: dict[str, None] = {}
     for rule in app.url_map.iter_rules():
-        if rule.endpoint == "static":
+        if rule.endpoint == "static" or rule.rule == "/":
             continue
         collected.setdefault(rule.rule, None)
 
