@@ -26,27 +26,8 @@ CORS(app)
 # ENV VARIABLES
 # ----------------------------
 DEFAULT_COLLECTIONS = ["hotel_knowledge"]
+COLLECTIONS = DEFAULT_COLLECTIONS.copy()
 ERROR_MESSAGE = "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
-
-# Сопоставление старых названий коллекций новым. Помогает пережить переименования
-# без необходимости немедленно менять переменные окружения.
-COLLECTION_ALIASES: dict[str, str] = {
-    "hotel_ru": "hotel_knowledge",
-}
-
-
-def _normalize_collection_names(names: list[str]) -> list[str]:
-    """Применяем алиасы и удаляем дубликаты, сохраняя порядок."""
-
-    normalized: list[str] = []
-    seen: set[str] = set()
-
-    for name in names:
-        target = COLLECTION_ALIASES.get(name, name)
-        if target not in seen:
-            seen.add(target)
-            normalized.append(target)
-    return normalized
 QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
@@ -57,73 +38,12 @@ AMVERA_GPT_URL = os.getenv(
 )
 AMVERA_GPT_MODEL = os.getenv("AMVERA_GPT_MODEL", "gpt-5").strip() or "gpt-5"
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
-AMVERA_AUTH_HEADER = os.getenv("AMVERA_AUTH_HEADER", "X-Auth-Token")
-AMVERA_AUTH_PREFIX = os.getenv("AMVERA_AUTH_PREFIX", "Bearer")
+AMVERA_AUTH_HEADER = "X-Auth-Token"
+AMVERA_AUTH_PREFIX = "Bearer"
 
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
-
-# Список коллекций, по которым ищем
-def _load_collections() -> list[str]:
-    """Определение списка коллекций для поиска с учётом переменных окружения."""
-
-    env_json = os.getenv("COLLECTIONS_JSON")
-    if env_json:
-        try:
-            parsed = json.loads(env_json)
-        except json.JSONDecodeError:
-            print(
-                "⚠️ COLLECTIONS_JSON не удалось распарсить как JSON — будет использован fallback",
-                f"(значение: {env_json!r})",
-            )
-        else:
-            if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
-                normalized = _normalize_collection_names(parsed)
-                print(
-                    "🔧 Источник коллекций: COLLECTIONS_JSON →",
-                    ", ".join(normalized) or "<пусто>",
-                )
-                return normalized
-            print(
-                "⚠️ COLLECTIONS_JSON должно быть списком строк — будет использован fallback",
-                f"(значение: {parsed!r})",
-            )
-
-    qdrant_collection = os.getenv("QDRANT_COLLECTION")
-    collection_name = os.getenv("COLLECTION_NAME")
-    single_collection = qdrant_collection or collection_name
-    if single_collection:
-        source = "QDRANT_COLLECTION" if qdrant_collection else "COLLECTION_NAME"
-        normalized = _normalize_collection_names([single_collection])
-        print(
-            f"🔧 Источник коллекций: {source} →",
-            ", ".join(normalized) or "<пусто>",
-        )
-        return normalized
-
-    comma_separated = os.getenv("COLLECTIONS")
-    if comma_separated:
-        items = [item.strip() for item in comma_separated.split(",") if item.strip()]
-        if items:
-            normalized = _normalize_collection_names(items)
-            print(
-                "🔧 Источник коллекций: COLLECTIONS →",
-                ", ".join(normalized) or "<пусто>",
-            )
-            return normalized
-
-    # Значения по умолчанию (актуальная единая коллекция)
-    normalized = _normalize_collection_names(DEFAULT_COLLECTIONS)
-    print(
-        "🔧 Источник коллекций: значение по умолчанию →",
-        ", ".join(normalized) or "<пусто>",
-    )
-    return normalized
-
-
-COLLECTIONS = _load_collections()
-
 
 def _filter_existing_collections(
     client: QdrantClient,
