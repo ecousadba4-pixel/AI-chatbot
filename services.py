@@ -28,6 +28,7 @@ def create_dependencies(settings: Settings) -> Dependencies:
     embedding_start = perf_counter()
     embedding_model = resolve_embedding_model(
         model_name=settings.embedding_model,
+        local_path=settings.embedding_model_path,
         allow_download=True,
     )
     embedding_duration = perf_counter() - embedding_start
