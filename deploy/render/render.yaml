@@ -10,7 +10,7 @@ services:
     dockerfilePath: Dockerfile
     envVars:
       - key: QDRANT_HOST
-        value: qdrant.example.com
+        value: https://u4s-ai-chatbot-karinausadba.amvera.io/
       - key: QDRANT_PORT
         value: "6333"
       - key: QDRANT_HTTPS
@@ -18,7 +18,7 @@ services:
       - key: QDRANT_API_KEY
         sync: false
       - key: REDIS_HOST
-        value: redis.example.com
+        value: https://hotelbot-redis-karinausadba.db-msk0.amvera.tech
       - key: REDIS_PORT
         value: "6379"
       - key: AMVERA_GPT_URL
