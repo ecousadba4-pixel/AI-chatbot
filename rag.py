@@ -39,9 +39,11 @@ def normalize_text(text: str, morph) -> str:
 
 
 def encode(text: str, model) -> list[float]:
-    """Кодирование текста в эмбеддинг с приведением к list."""
+    """Кодирование текста запроса с добавлением e5-префикса."""
 
-    vector = model.encode(text)
+    cleaned = text.strip()
+    prepared = f"query: {cleaned}" if cleaned else "query:"
+    vector = model.encode(prepared)
     if isinstance(vector, np.ndarray):
         return vector.tolist()
     if isinstance(vector, Sequence):

@@ -14,8 +14,8 @@ def main() -> None:
         )
     model = resolve_embedding_model(model_name=model_name, allow_download=True)
 
-    # Run a dummy encode to make sure the model weights are cached.
-    model.encode(["warmup"])
+    # Run a dummy encode with e5-совместимыми префиксами, чтобы прогреть модель.
+    model.encode(["query: warmup", "passage: warmup"])
 
 
 if __name__ == "__main__":
