@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import requests
 
 from config import Settings
+
+
+LOGGER = logging.getLogger("chatbot.amvera")
 
 
 @dataclass(slots=True)
@@ -73,15 +77,19 @@ def perform_request(settings: Settings, token: str, payload: dict[str, Any], *, 
 
 
 def log_error(response: requests.Response) -> None:
-    print(f"Запрос завершился ошибкой: {response.status_code} {response.reason}")
+    LOGGER.warning(
+        "Запрос к Amvera завершился ошибкой: %s %s",
+        response.status_code,
+        response.reason,
+    )
     try:
         error_json = response.json()
     except ValueError:
         error_json = {"raw": response.text}
-    print(json.dumps(error_json, ensure_ascii=False, indent=2))
+    LOGGER.warning("Тело ошибки: %s", json.dumps(error_json, ensure_ascii=False, indent=2))
     if response.status_code == 403:
-        print(
-            "Подсказка: код 403 часто означает отсутствие доступа к выбранной модели. "
+        LOGGER.warning(
+            "Код 403 часто означает отсутствие доступа к выбранной модели. "
             "Проверьте права доступа в Amvera или попробуйте выбрать другую модель."
         )
 

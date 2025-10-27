@@ -1,11 +1,13 @@
 """REST API чат-бота для усадьбы "Четыре сезона"."""
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, current_app, jsonify, request
 from flask_cors import CORS
 
 from amvera import (
@@ -22,80 +24,72 @@ from price_dialog import handle_price_dialog
 from rag import SearchResult, encode, normalize_text, search_all_collections
 from services import Dependencies, create_dependencies
 
-# ----------------------------
-# ИНИЦИАЛИЗАЦИЯ
-# ----------------------------
-settings = Settings.from_env()
-deps: Dependencies = create_dependencies(settings)
 
-app = Flask(__name__)
-CORS(app)
-
+LOGGER = logging.getLogger("chatbot")
 CANCEL_COMMANDS = {"отмена", "сброс", "начать заново", "стоп", "reset"}
 ERROR_MESSAGE = "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
-DEFAULT_COLLECTIONS = list(settings.default_collections)
 
-# ----------------------------
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ----------------------------
-def _log_startup_information() -> None:
-    print(
-        "✅ Connected to Qdrant at "
-        f"{settings.qdrant_host}:{settings.qdrant_port} (https={settings.qdrant_https})"
-    )
-    print(f"✅ Connected to Redis at {settings.redis_host}:{settings.redis_port}")
-    print(
-        "🔢 Embedding dimension:",
-        deps.embedding_model.get_sentence_embedding_dimension(),
-    )
-    resolved_from = getattr(deps.embedding_model, "_resolved_from", settings.embedding_model)
-    print(f"📦 Источник модели эмбеддингов: {resolved_from}")
-    print(
-        f"🤖 Amvera GPT endpoint: {settings.amvera_url} (model={settings.amvera_model})"
+
+@dataclass(frozen=True)
+class AppContainer:
+    """Собранные настройки и зависимости приложения."""
+
+    settings: Settings
+    dependencies: Dependencies
+    collections: tuple[str, ...]
+
+
+def configure_logging() -> None:
+    """Настроить базовое логирование один раз за время жизни процесса."""
+
+    if logging.getLogger().handlers:
+        # Логирование уже настроено окружением (например, gunicorn)
+        return
+
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
 
 def _filter_existing_collections(
-    client, requested: list[str], fallback: list[str]
-) -> list[str]:
+    client, requested: Iterable[str], fallback: Iterable[str]
+) -> tuple[str, ...]:
     try:
         response = client.get_collections()
         available = {collection.name for collection in response.collections}
     except Exception as exc:  # pragma: no cover - сетевой сбой
-        print(f"⚠️ Не удалось получить список коллекций из Qdrant: {exc}")
-        return requested
+        LOGGER.warning("Не удалось получить список коллекций из Qdrant: %s", exc)
+        return tuple(requested)
 
     if not available:
-        print("⚠️ В Qdrant не найдено ни одной коллекции")
-        return requested
+        LOGGER.warning("В Qdrant не найдено ни одной коллекции")
+        return tuple(requested)
 
-    filtered = [name for name in requested if name in available]
+    requested_list = list(dict.fromkeys(requested))
+    filtered = [name for name in requested_list if name in available]
     if filtered:
-        missing = [name for name in requested if name not in available]
+        missing = sorted(name for name in requested_list if name not in available)
         if missing:
-            print(
-                "⚠️ Пропускаем отсутствующие коллекции: " + ", ".join(sorted(missing))
+            LOGGER.warning(
+                "Пропускаем отсутствующие коллекции: %s",
+                ", ".join(missing),
             )
-        return filtered
+        return tuple(filtered)
 
-    fallback_candidates = [name for name in fallback if name in available] or sorted(
-        available
+    fallback_candidates = [name for name in fallback if name in available]
+    if not fallback_candidates:
+        fallback_candidates = sorted(available)
+    LOGGER.warning(
+        "Ни одна из запрошенных коллекций не найдена. Используем fallback: %s",
+        ", ".join(fallback_candidates),
     )
-    print(
-        "⚠️ Ни одна из запрошенных коллекций не найдена. Используем fallback: "
-        + ", ".join(fallback_candidates)
-    )
-    return fallback_candidates
+    return tuple(fallback_candidates)
 
 
-COLLECTIONS = _filter_existing_collections(
-    deps.qdrant,
-    DEFAULT_COLLECTIONS.copy(),
-    DEFAULT_COLLECTIONS,
-)
-
-
-def _collect_public_endpoints() -> list[str]:
+def _collect_public_endpoints(app: Flask) -> list[str]:
     collected: dict[str, None] = {}
     for rule in app.url_map.iter_rules():
         if rule.endpoint == "static" or rule.rule == "/":
@@ -123,9 +117,6 @@ def _collect_public_endpoints() -> list[str]:
     return ordered
 
 
-# ----------------------------
-# ОСНОВНАЯ ЛОГИКА
-# ----------------------------
 def _json_reply(session_id: str, message: str, **extra: Any):
     payload = {"response": message, "session_id": session_id}
     payload.update(extra)
@@ -136,18 +127,21 @@ def _build_context(results: list[SearchResult]) -> str:
     return "\n\n".join(result.text for result in results)
 
 
-def _generate_response(context: str, question: str) -> str:
+def _generate_response(container: AppContainer, context: str, question: str) -> str:
+    deps = container.dependencies
+    settings = container.settings
+
     redis_key = cache_key(context, question)
 
     cached = deps.redis.get(redis_key)
     if cached:
-        print("🎯 Ответ из кэша Redis")
+        LOGGER.info("Ответ для вопроса %s получен из кэша Redis", question)
         return cached
 
     try:
         token = ensure_token(settings)
     except AmveraError as exc:
-        print(f"⚠️ {exc}")
+        LOGGER.warning("%s", exc)
         return ERROR_MESSAGE
 
     payload = build_payload(settings.amvera_model, context, question)
@@ -155,7 +149,7 @@ def _generate_response(context: str, question: str) -> str:
     try:
         response = perform_request(settings, token, payload, timeout=60)
     except requests.RequestException as exc:
-        print(f"⚠️ Не удалось выполнить запрос к Amvera API: {exc}")
+        LOGGER.warning("Не удалось выполнить запрос к Amvera API: %s", exc)
         return ERROR_MESSAGE
 
     if not response.ok:
@@ -165,319 +159,409 @@ def _generate_response(context: str, question: str) -> str:
     try:
         data = response.json()
     except ValueError:
-        print("⚠️ Не удалось распарсить ответ Amvera как JSON")
+        LOGGER.warning("Не удалось распарсить ответ Amvera как JSON")
         return ERROR_MESSAGE
 
     try:
         answer = extract_answer(data)
     except AmveraError as exc:
-        print(f"⚠️ {exc}")
+        LOGGER.warning("%s", exc)
         return ERROR_MESSAGE
 
     try:
         deps.redis.setex(redis_key, 3600, answer)
     except Exception as exc:  # pragma: no cover - сбой Redis не критичен
-        print(f"⚠️ Не удалось сохранить ответ в Redis: {exc}")
+        LOGGER.warning("Не удалось сохранить ответ в Redis: %s", exc)
     else:
-        print("💾 Ответ сохранён в кэш Redis")
+        LOGGER.debug("Ответ сохранён в кэш Redis под ключом %s", redis_key)
 
     return answer
 
 
-# ----------------------------
-# ROUTES
-# ----------------------------
-@app.route("/api/chat", methods=["POST"])
-def chat() -> Any:
-    data = request.get_json(silent=True) or {}
-    question = data.get("message", "").strip()
-    session_id = data.get("session_id") or os.urandom(16).hex()
+def _get_container() -> AppContainer:
+    container = current_app.config.get("container")
+    if not isinstance(container, AppContainer):  # pragma: no cover - защитная проверка
+        raise RuntimeError("Конфигурация приложения не инициализирована")
+    return container
 
-    if not question:
-        return _json_reply(session_id, "Пожалуйста, введите вопрос.")
 
-    print(f"\n💬 Вопрос [{session_id[:8]}]: {question}")
+def _log_startup_information(container: AppContainer) -> None:
+    settings = container.settings
+    deps = container.dependencies
 
-    if question.lower() in CANCEL_COMMANDS:
-        deps.redis.delete(f"booking_session:{session_id}")
-        return _json_reply(session_id, "Диалог сброшен. Чем могу помочь?")
-
-    booking_result = handle_price_dialog(
-        session_id,
-        question,
-        deps.redis,
-        deps.morph,
+    LOGGER.info(
+        "Connected to Qdrant at %s:%s (https=%s)",
+        settings.qdrant_host,
+        settings.qdrant_port,
+        settings.qdrant_https,
     )
-    if booking_result:
+    LOGGER.info(
+        "Connected to Redis at %s:%s",
+        settings.redis_host,
+        settings.redis_port,
+    )
+    LOGGER.info(
+        "Embedding dimension: %s",
+        deps.embedding_model.get_sentence_embedding_dimension(),
+    )
+    resolved_from = getattr(deps.embedding_model, "_resolved_from", settings.embedding_model)
+    LOGGER.info("Источник модели эмбеддингов: %s", resolved_from)
+    LOGGER.info(
+        "Amvera GPT endpoint: %s (model=%s)",
+        settings.amvera_url,
+        settings.amvera_model,
+    )
+
+
+def create_app(
+    *,
+    settings: Settings | None = None,
+    dependencies: Dependencies | None = None,
+) -> Flask:
+    """Сконструировать и сконфигурировать экземпляр Flask-приложения."""
+
+    configure_logging()
+
+    resolved_settings = settings or Settings.from_env()
+    resolved_dependencies = dependencies or create_dependencies(resolved_settings)
+    collections = _filter_existing_collections(
+        resolved_dependencies.qdrant,
+        resolved_settings.default_collections,
+        resolved_settings.default_collections,
+    )
+
+    container = AppContainer(
+        settings=resolved_settings,
+        dependencies=resolved_dependencies,
+        collections=collections,
+    )
+
+    app = Flask(__name__)
+    CORS(app)
+    app.config["container"] = container
+
+    _log_startup_information(container)
+
+    register_routes(app)
+    return app
+
+
+def register_routes(app: Flask) -> None:
+    """Зарегистрировать HTTP-маршруты на переданном приложении."""
+
+    @app.route("/api/chat", methods=["POST"])
+    def chat() -> Any:  # noqa: D401 - функция возвращает JSON-ответ
+        container = _get_container()
+        deps = container.dependencies
+
+        data = request.get_json(silent=True) or {}
+        question = data.get("message", "").strip()
+        session_id = data.get("session_id") or os.urandom(16).hex()
+
+        if not question:
+            return _json_reply(session_id, "Пожалуйста, введите вопрос.")
+
+        LOGGER.info("Вопрос [%s]: %s", session_id[:8], question)
+
+        if question.lower() in CANCEL_COMMANDS:
+            deps.redis.delete(f"booking_session:{session_id}")
+            return _json_reply(session_id, "Диалог сброшен. Чем могу помочь?")
+
+        booking_result = handle_price_dialog(
+            session_id,
+            question,
+            deps.redis,
+            deps.morph,
+        )
+        if booking_result:
+            return _json_reply(
+                session_id,
+                booking_result["answer"],
+                mode=booking_result.get("mode", "booking"),
+            )
+
+        normalized = normalize_text(question, deps.morph)
+        LOGGER.debug("Нормализованный запрос: %s", normalized)
+
+        query_embedding = encode(normalized, deps.embedding_model)
+        LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
+
+        LOGGER.info("Поиск по коллекциям: %s", ", ".join(container.collections))
+        search_results = search_all_collections(
+            deps.qdrant,
+            container.collections,
+            query_embedding,
+            limit=5,
+        )
+
+        if not search_results:
+            LOGGER.info("Ничего не найдено ни в одной коллекции")
+            return _json_reply(
+                session_id,
+                "Извините, не нашёл информации по вашему вопросу. "
+                "Попробуйте переформулировать или свяжитесь с администратором.",
+            )
+
+        LOGGER.debug("Топ-результаты: %s", search_results[:3])
+
+        context = _build_context(search_results[:3])
+        if not context.strip():
+            LOGGER.warning("Контекст пуст после извлечения payload['text']")
+            return _json_reply(
+                session_id,
+                "Извините, не удалось сформировать ответ. "
+                "Попробуйте переформулировать вопрос.",
+            )
+
+        LOGGER.debug(
+            "Итоговый контекст длиной %s символов", len(context)
+        )
+
+        answer = _generate_response(container, context, question)
+        LOGGER.info("Ответ сгенерирован: %s", answer[:100].replace("\n", " "))
+
         return _json_reply(
             session_id,
-            booking_result["answer"],
-            mode=booking_result.get("mode", "booking"),
+            answer,
+            debug_info={
+                "top_collection": search_results[0].collection,
+                "top_score": search_results[0].score,
+                "results_count": len(search_results),
+                "embedding_dim": len(query_embedding),
+            },
         )
 
-    normalized = normalize_text(question, deps.morph)
-    print(f"📝 Нормализовано: {normalized}")
-
-    query_embedding = encode(normalized, deps.embedding_model)
-    print(f"🔢 Embedding размер запроса: {len(query_embedding)}")
-
-    print("🔍 Поиск по коллекциям:", ", ".join(COLLECTIONS))
-    search_results = search_all_collections(
-        deps.qdrant,
-        COLLECTIONS,
-        query_embedding,
-        limit=5,
-    )
-
-    if not search_results:
-        print("❌ Ничего не найдено ни в одной коллекции")
-        return _json_reply(
-            session_id,
-            "Извините, не нашёл информации по вашему вопросу. "
-            "Попробуйте переформулировать или свяжитесь с администратором.",
-        )
-
-    print("\n📊 Топ-результаты:")
-    for index, result in enumerate(search_results, start=1):
-        preview = result.text[:100].replace("\n", " ")
-        print(
-            f"   {index}. [{result.collection}] score={result.score:.4f} | {preview}..."
-        )
-
-    context = _build_context(search_results[:3])
-    if not context.strip():
-        print("⚠️ Контекст пуст после извлечения payload['text']")
-        return _json_reply(
-            session_id,
-            "Извините, не удалось сформировать ответ. "
-            "Попробуйте переформулировать вопрос.",
-        )
-
-    print(f"\n📄 Итоговый контекст ({len(context)} символов):\n{context[:300]}...\n")
-
-    answer = _generate_response(context, question)
-    print(f"✅ Ответ сгенерирован: {answer[:100]}...\n")
-
-    return _json_reply(
-        session_id,
-        answer,
-        debug_info={
-            "top_collection": search_results[0].collection,
-            "top_score": search_results[0].score,
-            "results_count": len(search_results),
-            "embedding_dim": len(query_embedding),
-        },
-    )
-
-
-@app.route("/api/debug/qdrant", methods=["GET"])
-def debug_qdrant() -> Any:
-    try:
-        collections = deps.qdrant.get_collections().collections
-    except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc)})
-
-    return jsonify({
-        "status": "ok",
-        "collections": [collection.name for collection in collections],
-    })
-
-
-@app.route("/api/debug/redis", methods=["GET"])
-def debug_redis() -> Any:
-    try:
-        deps.redis.ping()
-    except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc)})
-
-    return jsonify({"status": "ok", "message": "Redis connection active"})
-
-
-@app.route("/api/debug/search", methods=["POST"])
-def debug_search() -> Any:
-    data = request.get_json(silent=True) or {}
-    question = data.get("message", "").strip()
-
-    if not question:
-        return jsonify({"error": "message required"}), 400
-
-    normalized = normalize_text(question, deps.morph)
-    vector = encode(normalized, deps.embedding_model)
-    results = search_all_collections(
-        deps.qdrant,
-        COLLECTIONS,
-        vector,
-        limit=10,
-    )
-
-    return jsonify(
-        {
-            "question": question,
-            "normalized": normalized,
-            "embedding_dim": len(vector),
-            "results": [
-                {
-                    "collection": result.collection,
-                    "score": result.score,
-                    "text_preview": result.text[:200],
-                }
-                for result in results
-            ],
-        }
-    )
-
-
-@app.route("/api/debug/amvera", methods=["GET"], strict_slashes=False)
-def debug_amvera() -> Any:
-    prompt = request.args.get("prompt", "Привет! Ответь 'ok'.")
-    model_name = request.args.get("model") or settings.amvera_model
-
-    try:
-        token = ensure_token(settings)
-    except AmveraError as exc:
-        return jsonify({"status": "error", "message": str(exc)}), 503
-
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "text": "Ты — простая проверка доступа к API."},
-            {"role": "user", "text": prompt},
-        ],
-    }
-
-    try:
-        response = perform_request(settings, token, payload, timeout=30)
-    except requests.RequestException as exc:
-        return jsonify({"status": "error", "message": f"Не удалось выполнить запрос: {exc}"}), 502
-
-    if response.ok:
+    @app.route("/api/debug/qdrant", methods=["GET"])
+    def debug_qdrant() -> Any:
+        container = _get_container()
         try:
-            response_json = response.json()
-        except ValueError:
-            response_json = {"raw": response.text}
+            collections = container.dependencies.qdrant.get_collections().collections
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
         return jsonify(
             {
                 "status": "ok",
-                "model": model_name,
-                "prompt": prompt,
-                "response": response_json,
+                "collections": [collection.name for collection in collections],
             }
         )
 
-    log_error(response)
-    try:
-        error_body = response.json()
-    except ValueError:
-        error_body = {"raw": response.text}
-    return (
-        jsonify(
+    @app.route("/api/debug/redis", methods=["GET"])
+    def debug_redis() -> Any:
+        container = _get_container()
+        try:
+            container.dependencies.redis.ping()
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+        return jsonify({"status": "ok", "message": "Redis connection active"})
+
+    @app.route("/api/debug/search", methods=["POST"])
+    def debug_search() -> Any:
+        container = _get_container()
+        deps = container.dependencies
+
+        data = request.get_json(silent=True) or {}
+        question = data.get("message", "").strip()
+
+        if not question:
+            return jsonify({"error": "message required"}), 400
+
+        normalized = normalize_text(question, deps.morph)
+        vector = encode(normalized, deps.embedding_model)
+        results = search_all_collections(
+            deps.qdrant,
+            container.collections,
+            vector,
+            limit=10,
+        )
+
+        return jsonify(
             {
-                "status": "error",
-                "message": "Amvera API вернул ошибку",
-                "http_status": response.status_code,
-                "details": error_body,
+                "question": question,
+                "normalized": normalized,
+                "embedding_dim": len(vector),
+                "results": [
+                    {
+                        "collection": result.collection,
+                        "score": result.score,
+                        "text_preview": result.text[:200],
+                    }
+                    for result in results
+                ],
             }
-        ),
-        response.status_code,
-    )
+        )
 
+    @app.route("/api/debug/amvera", methods=["GET"], strict_slashes=False)
+    def debug_amvera() -> Any:
+        container = _get_container()
+        settings = container.settings
 
-@app.route("/api/debug/model", methods=["GET"])
-def debug_model() -> Any:
-    return jsonify(
-        {
-            "model": settings.embedding_model,
-            "embedding_dimension": deps.embedding_model.get_sentence_embedding_dimension(),
-        }
-    )
+        prompt = request.args.get("prompt", "Привет! Ответь 'ok'.")
+        model_name = request.args.get("model") or settings.amvera_model
 
+        try:
+            token = ensure_token(settings)
+        except AmveraError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 503
 
-@app.route("/api/debug/status", methods=["GET"])
-def debug_status() -> Any:
-    services: dict[str, Any] = {}
-
-    try:
-        deps.qdrant.get_collections()
-        services["qdrant"] = {
-            "status": "ok",
-            "host": settings.qdrant_host,
-            "port": settings.qdrant_port,
-        }
-    except Exception as exc:
-        services["qdrant"] = {
-            "status": "error",
-            "message": str(exc),
-            "host": settings.qdrant_host,
-            "port": settings.qdrant_port,
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "text": "Ты — простая проверка доступа к API."},
+                {"role": "user", "text": prompt},
+            ],
         }
 
-    try:
-        deps.redis.ping()
-        services["redis"] = {
-            "status": "ok",
-            "host": settings.redis_host,
-            "port": settings.redis_port,
-        }
-    except Exception as exc:
-        services["redis"] = {
-            "status": "error",
-            "message": str(exc),
-            "host": settings.redis_host,
-            "port": settings.redis_port,
-        }
+        try:
+            response = perform_request(settings, token, payload, timeout=30)
+        except requests.RequestException as exc:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Не удалось выполнить запрос: {exc}",
+                    }
+                ),
+                502,
+            )
 
-    try:
-        services["embedding_model"] = {
-            "status": "ok",
-            "name": settings.embedding_model,
-            "dimension": deps.embedding_model.get_sentence_embedding_dimension(),
-        }
-    except Exception as exc:
-        services["embedding_model"] = {
-            "status": "error",
-            "name": settings.embedding_model,
-            "message": str(exc),
-        }
+        if response.ok:
+            try:
+                response_json = response.json()
+            except ValueError:
+                response_json = {"raw": response.text}
+            return jsonify(
+                {
+                    "status": "ok",
+                    "model": model_name,
+                    "prompt": prompt,
+                    "response": response_json,
+                }
+            )
 
-    services["amvera_gpt"] = {
-        "status": "configured" if settings.amvera_url else "not_configured",
-        "url": settings.amvera_url,
-    }
-
-    overall_status = (
-        "ok" if all(service.get("status") != "error" for service in services.values()) else "degraded"
-    )
-
-    return jsonify({"status": overall_status, "services": services})
-
-
-@app.route("/health")
-def health() -> Any:
-    return "OK", 200
-
-
-@app.route("/")
-def home() -> Any:
-    return jsonify(
-        {
-            "status": "ok",
-            "message": "Усадьба 'Четыре Сезона' - AI Assistant",
-            "version": "4.0",
-            "features": ["RAG", "Booking Dialog", "Redis Cache"],
-            "embedding_model": settings.embedding_model,
-            "embedding_dim": deps.embedding_model.get_sentence_embedding_dimension(),
-            "embedding_source": getattr(
-                deps.embedding_model, "_resolved_from", settings.embedding_model
+        log_error(response)
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = {"raw": response.text}
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Amvera API вернул ошибку",
+                    "http_status": response.status_code,
+                    "details": error_body,
+                }
             ),
-            "endpoints": _collect_public_endpoints(),
+            response.status_code,
+        )
+
+    @app.route("/api/debug/model", methods=["GET"])
+    def debug_model() -> Any:
+        container = _get_container()
+        deps = container.dependencies
+        settings = container.settings
+        return jsonify(
+            {
+                "model": settings.embedding_model,
+                "embedding_dimension": deps.embedding_model.get_sentence_embedding_dimension(),
+            }
+        )
+
+    @app.route("/api/debug/status", methods=["GET"])
+    def debug_status() -> Any:
+        container = _get_container()
+        deps = container.dependencies
+        settings = container.settings
+
+        services_state: dict[str, Any] = {}
+
+        try:
+            deps.qdrant.get_collections()
+            services_state["qdrant"] = {
+                "status": "ok",
+                "host": settings.qdrant_host,
+                "port": settings.qdrant_port,
+            }
+        except Exception as exc:
+            services_state["qdrant"] = {
+                "status": "error",
+                "message": str(exc),
+                "host": settings.qdrant_host,
+                "port": settings.qdrant_port,
+            }
+
+        try:
+            deps.redis.ping()
+            services_state["redis"] = {
+                "status": "ok",
+                "host": settings.redis_host,
+                "port": settings.redis_port,
+            }
+        except Exception as exc:
+            services_state["redis"] = {
+                "status": "error",
+                "message": str(exc),
+                "host": settings.redis_host,
+                "port": settings.redis_port,
+            }
+
+        try:
+            services_state["embedding_model"] = {
+                "status": "ok",
+                "name": settings.embedding_model,
+                "dimension": deps.embedding_model.get_sentence_embedding_dimension(),
+            }
+        except Exception as exc:
+            services_state["embedding_model"] = {
+                "status": "error",
+                "name": settings.embedding_model,
+                "message": str(exc),
+            }
+
+        services_state["amvera_gpt"] = {
+            "status": "configured" if settings.amvera_url else "not_configured",
+            "url": settings.amvera_url,
         }
-    )
+
+        overall_status = (
+            "ok"
+            if all(service.get("status") != "error" for service in services_state.values())
+            else "degraded"
+        )
+
+        return jsonify({"status": overall_status, "services": services_state})
+
+    @app.route("/health")
+    def health() -> Any:
+        return "OK", 200
+
+    @app.route("/")
+    def home() -> Any:
+        container = _get_container()
+        deps = container.dependencies
+        settings = container.settings
+        return jsonify(
+            {
+                "status": "ok",
+                "message": "Усадьба 'Четыре Сезона' - AI Assistant",
+                "version": "4.0",
+                "features": ["RAG", "Booking Dialog", "Redis Cache"],
+                "embedding_model": settings.embedding_model,
+                "embedding_dim": deps.embedding_model.get_sentence_embedding_dimension(),
+                "embedding_source": getattr(
+                    deps.embedding_model,
+                    "_resolved_from",
+                    settings.embedding_model,
+                ),
+                "endpoints": _collect_public_endpoints(app),
+            }
+        )
 
 
-# ----------------------------
-# ENTRY POINT
-# ----------------------------
-_log_startup_information()
+app = create_app()
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))

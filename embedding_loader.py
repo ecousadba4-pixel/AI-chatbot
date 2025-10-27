@@ -1,10 +1,14 @@
 """Утилиты для загрузки модели эмбеддингов SentenceTransformer."""
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from sentence_transformers import SentenceTransformer
+
+
+LOGGER = logging.getLogger("chatbot.embedding_loader")
 
 
 def resolve_embedding_model(
@@ -19,7 +23,7 @@ def resolve_embedding_model(
                 f"Указанный путь в EMBEDDING_MODEL_LOCAL_PATH не найден: {path}"
             )
 
-        print(f"📁 Загружаем модель эмбеддингов из локального каталога: {path}")
+        LOGGER.info("Загружаем модель эмбеддингов из локального каталога: %s", path)
         try:
             model = SentenceTransformer(str(path), local_files_only=True)
         except Exception as exc:  # pragma: no cover - зависит от содержимого каталога
@@ -29,7 +33,7 @@ def resolve_embedding_model(
             ) from exc
 
         setattr(model, "_resolved_from", str(path))
-        print("✅ Модель эмбеддингов загружена из локального каталога")
+        LOGGER.info("Модель эмбеддингов загружена из локального каталога")
         return model
 
     if not allow_download:
@@ -37,7 +41,7 @@ def resolve_embedding_model(
             "Загрузка модели из облака запрещена, альтернативные источники не предусмотрены."
         )
 
-    print(f"🌐 Загружаем модель эмбеддингов из Hugging Face: {model_name}")
+    LOGGER.info("Загружаем модель эмбеддингов из Hugging Face: %s", model_name)
 
     cache_dir = os.getenv("SENTENCE_TRANSFORMERS_HOME")
     load_kwargs = {"cache_folder": cache_dir} if cache_dir else {}
@@ -53,7 +57,8 @@ def resolve_embedding_model(
 
     setattr(model, "_resolved_from", model_name)
 
-    print(
-        f"✅ Модель эмбеддингов из Hugging Face '{model_name}' загружена и готова к работе"
+    LOGGER.info(
+        "Модель эмбеддингов из Hugging Face '%s' загружена и готова к работе",
+        model_name,
     )
     return model

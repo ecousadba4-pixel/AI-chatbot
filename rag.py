@@ -1,6 +1,7 @@
 """Инструменты поиска релевантных ответов в Qdrant."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from heapq import nlargest
 import re
@@ -10,6 +11,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 
 
+LOGGER = logging.getLogger("chatbot.rag")
 _WORD_PATTERN = re.compile(r"[а-яёa-z0-9]+")
 
 
@@ -99,7 +101,7 @@ def search_all_collections(
                 limit=limit,
             )
         except Exception as exc:  # pragma: no cover - сетевые ошибки
-            print(f"⚠️ Ошибка поиска в {collection}: {exc}")
+            LOGGER.warning("Ошибка поиска в %s: %s", collection, exc)
             continue
 
         for hit in search_response:
