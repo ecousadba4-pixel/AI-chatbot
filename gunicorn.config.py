@@ -1,13 +1,43 @@
-import os
 import multiprocessing
+import os
+import sys
+
+
+def _default_worker_count() -> int:
+    """Подобрать безопасное значение workers по умолчанию."""
+
+    cpu_count = multiprocessing.cpu_count() or 1
+    # Для небольших инстансов одного процесса достаточно, иначе используем половину ядер
+    return max(1, min(cpu_count, cpu_count // 2 or 1))
+
+
+def _resolve_workers(raw_value: str | None) -> int:
+    """Преобразовать значение переменной окружения в целое."""
+
+    if raw_value is None:
+        return _default_worker_count()
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        print(
+            "[gunicorn.config] Некорректное значение GUNICORN_WORKERS. Используется значение по умолчанию.",
+            file=sys.stderr,
+        )
+        return _default_worker_count()
+
+    if value < 1:
+        print(
+            "[gunicorn.config] GUNICORN_WORKERS должно быть положительным. Используется значение по умолчанию.",
+            file=sys.stderr,
+        )
+        return _default_worker_count()
+
+    return value
+
 
 # Количество worker-процессов
-_workers_raw = os.getenv("GUNICORN_WORKERS")
-if _workers_raw is None:
-    raise RuntimeError(
-        "Переменная окружения GUNICORN_WORKERS должна быть установлена перед запуском gunicorn."
-    )
-workers = int(_workers_raw)
+workers = _resolve_workers(os.getenv("GUNICORN_WORKERS"))
 
 # Тип worker'ов
 worker_class = "sync"
