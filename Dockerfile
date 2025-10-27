@@ -8,6 +8,9 @@ ENV PYTHONUNBUFFERED=1 \
     MKL_NUM_THREADS=1 \
     TOKENIZERS_PARALLELISM=false
 
+ARG EMBEDDING_MODEL_NAME=ai-forever/sbert-base-lite-nlu-ru-v2
+ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
+
 WORKDIR /app
 
 # Минимальные системные пакеты
