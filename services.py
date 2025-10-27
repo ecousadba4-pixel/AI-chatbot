@@ -1,6 +1,7 @@
 """Инфраструктурные зависимости приложения."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -10,6 +11,9 @@ from qdrant_client import QdrantClient
 
 from embedding_loader import resolve_embedding_model
 from config import Settings
+
+
+LOGGER = logging.getLogger("chatbot.services")
 
 
 @dataclass(slots=True)
@@ -32,7 +36,7 @@ def create_dependencies(settings: Settings) -> Dependencies:
         allow_download=True,
     )
     embedding_duration = perf_counter() - embedding_start
-    print(f"⏱️ Загрузка модели эмбеддингов заняла {embedding_duration:.2f} с")
+    LOGGER.info("Загрузка модели эмбеддингов заняла %.2f с", embedding_duration)
 
     qdrant_start = perf_counter()
     qdrant_client = QdrantClient(
@@ -42,12 +46,12 @@ def create_dependencies(settings: Settings) -> Dependencies:
         https=settings.qdrant_https,
     )
     qdrant_duration = perf_counter() - qdrant_start
-    print(f"⏱️ Инициализация клиента Qdrant заняла {qdrant_duration:.2f} с")
+    LOGGER.info("Инициализация клиента Qdrant заняла %.2f с", qdrant_duration)
 
     morph_start = perf_counter()
     morph_analyzer = pymorphy3.MorphAnalyzer()
     morph_duration = perf_counter() - morph_start
-    print(f"⏱️ Создание MorphAnalyzer заняло {morph_duration:.2f} с")
+    LOGGER.info("Создание MorphAnalyzer заняло %.2f с", morph_duration)
 
     redis_client = redis.Redis(
         host=settings.redis_host,
