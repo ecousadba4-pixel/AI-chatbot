@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: ai-chatbot-render
+    env: docker
+    plan: free
+    autoDeploy: true
+    region: frankfurt
+    healthCheckPath: /health
+    dockerContext: .
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: QDRANT_HOST
+        value: qdrant.example.com
+      - key: QDRANT_PORT
+        value: "6333"
+      - key: QDRANT_HTTPS
+        value: "true"
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: REDIS_HOST
+        value: redis.example.com
+      - key: REDIS_PORT
+        value: "6379"
+      - key: AMVERA_GPT_URL
+        value: https://kong-proxy.yc.amvera.ru/api/v1/models/gpt
+      - key: AMVERA_GPT_MODEL
+        sync: false
+      - key: AMVERA_GPT_TOKEN
+        sync: false
+      - key: AMVERA_AUTH_HEADER
+        value: X-Auth-Token
+      - key: AMVERA_AUTH_PREFIX
+        value: Bearer
+      - key: EMBEDDING_MODEL_NAME
+        value: d0rj/e5-base-en-ru
+      - key: GUNICORN_WORKERS
+        value: "2"
+      - key: PORT
+        value: "8000"
+    secrets:
+      - QDRANT_API_KEY
+      - AMVERA_GPT_MODEL
+      - AMVERA_GPT_TOKEN

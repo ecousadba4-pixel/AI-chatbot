@@ -62,5 +62,30 @@ loglevel = "info"
 # Preload приложения (ускоряет запуск workers)
 preload_app = True
 
+def _resolve_port(raw_value: str | None) -> int:
+    """Получить порт, учитывая требования хостинга."""
+
+    if raw_value is None:
+        return 8000
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        print(
+            "[gunicorn.config] Некорректное значение PORT. Используется значение по умолчанию 8000.",
+            file=sys.stderr,
+        )
+        return 8000
+
+    if not (0 < value < 65536):
+        print(
+            "[gunicorn.config] PORT должен быть в диапазоне 1-65535. Используется значение по умолчанию 8000.",
+            file=sys.stderr,
+        )
+        return 8000
+
+    return value
+
+
 # Bind
-bind = "0.0.0.0:8000"
+bind = f"0.0.0.0:{_resolve_port(os.getenv('PORT'))}"
