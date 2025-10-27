@@ -5,7 +5,7 @@ ingest_and_search_qdrant_ru.py
 Заливает JSON из ./processed в Qdrant (Amvera/локально) и позволяет сделать гибридный поиск.
 
 Особенности:
-- Эмбеддинги для ai-forever/sbert-base-lite-nlu-ru-v2 через sentence-transformers (mean pooling + L2).
+- Эмбеддинги для ai-forever/frida-sbert-base-nlu-ru через sentence-transformers (mean pooling + L2).
 - Кэш энкодера (модель грузится один раз).
 - Автосборка QDRANT_URL из QDRANT_HOST/QDRANT_PORT/QDRANT_HTTPS, если QDRANT_URL не задан.
 - Безопасное пересоздание коллекции (delete -> create), batch-upsert.
@@ -91,7 +91,7 @@ BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "processed"
 
 # Модель эмбеддингов по умолчанию скачиваем из Hugging Face
-DEFAULT_EMBEDDING_MODEL_NAME = "ai-forever/sbert-base-lite-nlu-ru-v2"
+DEFAULT_EMBEDDING_MODEL_NAME = "ai-forever/frida-sbert-base-nlu-ru"
 EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL_NAME
 )
