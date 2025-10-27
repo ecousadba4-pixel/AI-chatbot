@@ -13,15 +13,10 @@ import pymorphy3
 import requests
 from dateutil.relativedelta import SA, relativedelta
 
-# ===============================
-# Настройка логирования
-# ===============================
 logger = logging.getLogger(__name__)
 
-# Морфологический анализатор используем для распознавания намерений
-_morph = pymorphy3.MorphAnalyzer()
+MORPH = pymorphy3.MorphAnalyzer()
 
-# Ключевые леммы, которые сигнализируют о запросе цены / бронирования
 PRICE_KEYWORD_LEMMAS = {
     "цена",
     "стоимость",
@@ -32,42 +27,45 @@ PRICE_KEYWORD_LEMMAS = {
     "проживание",
     "ночь",
 }
+PRICE_KEYWORD_PHRASES = ("сколько стоит",)
 
-# Отдельные фразы без морфологии
-PRICE_KEYWORD_PHRASES = [
-    "сколько стоит",
-]
-
-def _normalize_words(text: str) -> set[str]:
-    """Вернуть множество лемм слов в тексте."""
-
-    tokens = re.findall(r"[а-яёa-z]+", text.lower())
-    normalized: set[str] = set()
-
-    for token in tokens:
-        try:
-            parsed = _morph.parse(token)
-        except Exception:  # pragma: no cover - защита от редких сбоев pymorphy
-            parsed = None
-
-        if parsed:
-            normalized.add(parsed[0].normal_form)
-        else:
-            normalized.add(token)
-
-    return normalized
-
-# ===============================
-# Константы
-# ===============================
 MAX_ADULTS = 11
 MAX_TOTAL_GUESTS = 11
 MAX_STAY_DAYS = 30
 MIN_STAY_DAYS = 1
 
-class DialogStep(IntEnum):
-    """Шаги диалога бронирования."""
+SHELTER_URL = "https://pms.frontdesk24.ru/api/online/getVariants"
+SHELTER_TOKEN_ENV = "SHELTER_TOKEN"
+SHELTER_TIMEOUT = 15
+DATE_FORMAT = "%Y-%m-%d"
 
+
+def _normalize_words(text: str) -> set[str]:
+    tokens = re.findall(r"[а-яёa-z]+", text.lower())
+    lemmas: set[str] = set()
+    for token in tokens:
+        try:
+            parsed = MORPH.parse(token)
+        except Exception:  # pragma: no cover - защита от редких сбоев pymorphy
+            parsed = None
+        lemmas.add(parsed[0].normal_form if parsed else token)
+    return lemmas
+
+
+def _load_session(redis_client: Any, key: str) -> dict[str, Any]:
+    raw = redis_client.get(key)
+    if not raw:
+        return {}
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Не удалось распарсить сохранённую сессию, создаём новую")
+        redis_client.delete(key)
+        return {}
+
+
+class DialogStep(IntEnum):
     INTENT_DETECTION = 0
     CHECKIN_DATE = 1
     NIGHTS_COUNT = 2
@@ -75,52 +73,41 @@ class DialogStep(IntEnum):
     CHILDREN_INFO = 4
 
 
-@dataclass
+@dataclass(slots=True)
 class BookingSession:
-    """Сериализуемая сессия диалога."""
-
     user_id: str
     redis_client: Any
-    step: DialogStep = DialogStep.INTENT_DETECTION
+    step: DialogStep = field(default=DialogStep.INTENT_DETECTION)
     info: dict[str, Any] = field(default_factory=dict)
     last_activity: datetime = field(default_factory=datetime.now)
 
-    _TTL_SECONDS: int = 3600
-    _REDIS_PREFIX: str = "booking_session:"
+    _ttl_seconds: int = field(default=3600, init=False, repr=False)
+    _redis_prefix: str = field(default="booking_session:", init=False, repr=False)
 
     @property
     def redis_key(self) -> str:
-        return f"{self._REDIS_PREFIX}{self.user_id}"
+        return f"{self._redis_prefix}{self.user_id}"
 
     @classmethod
     def load(cls, user_id: str, redis_client: Any) -> "BookingSession":
-        raw = redis_client.get(f"{cls._REDIS_PREFIX}{user_id}")
-        if not raw:
-            return cls(user_id=user_id, redis_client=redis_client)
+        stored = _load_session(redis_client, f"{cls._redis_prefix}{user_id}")
+        info_raw = stored.get("info")
+        info = info_raw if isinstance(info_raw, dict) else {}
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Не удалось распарсить сохранённую сессию, создаём новую")
-            redis_client.delete(f"{cls._REDIS_PREFIX}{user_id}")
-            return cls(user_id=user_id, redis_client=redis_client)
+        last_activity_raw: Optional[str] = stored.get("last_activity")
+        if isinstance(last_activity_raw, str):
+            try:
+                last_activity = datetime.fromisoformat(last_activity_raw)
+            except ValueError:
+                last_activity = datetime.now()
+        else:
+            last_activity = datetime.now()
 
-        last_activity_str: Optional[str] = data.get("last_activity")
-        last_activity = (
-            datetime.fromisoformat(last_activity_str)
-            if isinstance(last_activity_str, str)
-            else datetime.now()
-        )
-
-        step_value = data.get("step", DialogStep.INTENT_DETECTION)
+        step_value = stored.get("step", DialogStep.INTENT_DETECTION)
         try:
             step = DialogStep(step_value)
         except ValueError:
             step = DialogStep.INTENT_DETECTION
-
-        info = data.get("info") or {}
-        if not isinstance(info, dict):
-            info = {}
 
         return cls(
             user_id=user_id,
@@ -139,24 +126,16 @@ class BookingSession:
             "info": self.info,
             "last_activity": self.last_activity.isoformat(),
         }
-        self.redis_client.setex(
-            self.redis_key,
-            self._TTL_SECONDS,
-            json.dumps(payload, default=str),
-        )
+        self.redis_client.setex(self.redis_key, self._ttl_seconds, json.dumps(payload))
 
     def delete(self) -> None:
         self.redis_client.delete(self.redis_key)
 
-# ===============================
-# Парсинг естественных выражений даты
-# ===============================
+
 def parse_natural_date(user_input: str) -> tuple[Optional[datetime], Optional[int]]:
-    """Парсинг естественных выражений даты с улучшенной логикой."""
     text = user_input.lower().strip()
     today = datetime.today()
 
-    # Точные совпадения
     if "завтра" in text:
         return today + timedelta(days=1), None
     if "послезавтра" in text:
@@ -172,19 +151,11 @@ def parse_natural_date(user_input: str) -> tuple[Optional[datetime], Optional[in
     if "через месяц" in text:
         return today + relativedelta(months=1), None
 
-    # Парсинг "через N дней"
     match = re.search(r"через\s+(\d+)\s+д", text)
     if match:
         return today + timedelta(days=int(match.group(1))), None
 
-    # Парсинг конкретных дат в разных форматах
-    date_formats = [
-        "%Y-%m-%d",
-        "%d.%m.%Y",
-        "%d/%m/%Y",
-        "%d %m %Y"
-    ]
-
+    date_formats = ["%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d %m %Y"]
     for fmt in date_formats:
         try:
             return datetime.strptime(text, fmt), None
@@ -193,64 +164,66 @@ def parse_natural_date(user_input: str) -> tuple[Optional[datetime], Optional[in
 
     return None, None
 
-# ===============================
-# Форматирование даты для пользователя
-# ===============================
+
 def format_date_russian(date_str: str) -> str:
-    """Форматирует дату в русский формат."""
-    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-    months = ["января", "февраля", "марта", "апреля", "мая", "июня",
-              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    date_obj = datetime.strptime(date_str, DATE_FORMAT)
+    months = [
+        "января",
+        "февраля",
+        "марта",
+        "апреля",
+        "мая",
+        "июня",
+        "июля",
+        "августа",
+        "сентября",
+        "октября",
+        "ноября",
+        "декабря",
+    ]
     return f"{date_obj.day} {months[date_obj.month - 1]}"
 
-# ===============================
-# Извлечение числа из текста
-# ===============================
+
 def extract_number(text: str) -> Optional[int]:
-    """Извлекает число из текста."""
-    match = re.search(r'\d+', text)
+    match = re.search(r"\d+", text)
     return int(match.group()) if match else None
 
-# ===============================
-# Валидация дат бронирования
-# ===============================
+
 def validate_dates(date_from: str, date_to: str) -> tuple[bool, str]:
-    """Валидация дат бронирования."""
     try:
-        checkin = datetime.strptime(date_from, "%Y-%m-%d")
-        checkout = datetime.strptime(date_to, "%Y-%m-%d")
+        checkin = datetime.strptime(date_from, DATE_FORMAT)
+        checkout = datetime.strptime(date_to, DATE_FORMAT)
         today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
 
         if checkin < today:
             return False, "Дата заезда не может быть в прошлом"
         if checkout <= checkin:
             return False, "Дата выезда должна быть после даты заезда"
-        if (checkout - checkin).days > MAX_STAY_DAYS:
+
+        stay = (checkout - checkin).days
+        if stay > MAX_STAY_DAYS:
             return False, f"Максимальный срок проживания - {MAX_STAY_DAYS} дней"
-        if (checkout - checkin).days < MIN_STAY_DAYS:
+        if stay < MIN_STAY_DAYS:
             return False, f"Минимальный срок проживания - {MIN_STAY_DAYS} день"
 
         return True, ""
-    except ValueError as e:
-        logger.error(f"Ошибка валидации дат: {e}")
+    except ValueError as exc:
+        logger.error("Ошибка валидации дат: %s", exc)
         return False, "Неверный формат даты"
 
-# ===============================
-# Валидация количества гостей
-# ===============================
+
 def validate_guests(adults: int, kids_ages: Iterable[int]) -> tuple[bool, str]:
-    """Валидация количества гостей."""
     if adults < 1:
         return False, "Должен быть хотя бы один взрослый"
     if adults > MAX_ADULTS:
         return False, f"Максимальное количество взрослых - {MAX_ADULTS}"
 
-    total_guests = adults + len(kids_ages)
+    kids = list(kids_ages)
+    total_guests = adults + len(kids)
     if total_guests > MAX_TOTAL_GUESTS:
         return False, f"Максимальное количество гостей в номере - {MAX_TOTAL_GUESTS}"
 
-    # Проверка возраста детей
-    for age in kids_ages:
+    for age in kids:
         if age < 0:
             return False, "Возраст ребенка не может быть отрицательным"
         if age >= 12:
@@ -258,103 +231,137 @@ def validate_guests(adults: int, kids_ages: Iterable[int]) -> tuple[bool, str]:
 
     return True, ""
 
-# ===============================
-# Основная функция обращения к Shelter
-# ===============================
+
+def _load_shelter_token() -> Optional[str]:
+    token = (os.getenv(SHELTER_TOKEN_ENV) or "").strip()
+    return token or None
+
+
+@dataclass(slots=True)
+class ShelterVariant:
+    name: str
+    price_rub: int
+    tariff: str
+
+    def format_line(self) -> str:
+        formatted_price = f"{self.price_rub:,}".replace(",", " ")
+        breakfast = "с завтраком" if "завтрак" in self.tariff.lower() else "без завтрака"
+        return f"• {self.name} — {formatted_price}₽ за весь период ({breakfast})"
+
+
+def _build_shelter_payload(
+    *,
+    token: str,
+    date_from: str,
+    date_to: str,
+    adults: int,
+    kids_ages: Iterable[int],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "token": token,
+        "currency": "",
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "language": "ru",
+        "onlyRostourismProgram": 0,
+        "rooms": [{"adults": adults}],
+        "roomsOnly": None,
+        "promocode": None,
+    }
+
+    kids_list = list(kids_ages)
+    if kids_list:
+        payload["rooms"][0]["kidsAges"] = ",".join(str(age) for age in kids_list)
+
+    return payload
+
+
 def get_room_price_from_shelter(
     date_from: str,
     date_to: str,
     adults: int,
     kids_ages: Iterable[int],
 ) -> str:
-    """Получение цен на номера из Shelter API."""
+    kids_ages_list = list(kids_ages)
+
+    is_valid, error_msg = validate_dates(date_from, date_to)
+    if not is_valid:
+        return error_msg
+
+    is_valid, error_msg = validate_guests(adults, kids_ages_list)
+    if not is_valid:
+        return error_msg
+
+    token = _load_shelter_token()
+    if not token:
+        logger.error("Не задан токен Shelter API (%s)", SHELTER_TOKEN_ENV)
+        return "Сервис бронирования временно недоступен. Пожалуйста, свяжитесь с администратором."
+
+    payload = _build_shelter_payload(
+        token=token,
+        date_from=date_from,
+        date_to=date_to,
+        adults=adults,
+        kids_ages=kids_ages_list,
+    )
+
+    headers = {"Content-Type": "application/json", "token": token}
+
     try:
-        kids_ages_list = list(kids_ages)
-
-        logger.info(
-            "Запрос к Shelter API: %s - %s, взрослые: %s, дети: %s",
-            date_from,
-            date_to,
-            adults,
-            kids_ages_list,
-        )
-
-        # Валидация дат
-        is_valid, error_msg = validate_dates(date_from, date_to)
-        if not is_valid:
-            return error_msg
-
-        # Валидация гостей
-        is_valid, error_msg = validate_guests(adults, kids_ages)
-        if not is_valid:
-            return error_msg
-
-        payload = {
-            "token": os.getenv("SHELTER_TOKEN"),
-            "currency": "",
-            "dateFrom": date_from,
-            "dateTo": date_to,
-            "language": "ru",
-            "onlyRostourismProgram": 0,
-            "rooms": [{"adults": adults}],
-            "roomsOnly": None,
-            "promocode": None
-        }
-
-        if kids_ages_list:
-            payload["rooms"][0]["kidsAges"] = ",".join(str(age) for age in kids_ages_list)
-
         response = requests.post(
-            "https://pms.frontdesk24.ru/api/online/getVariants",
-            headers={
-                "Content-Type": "application/json",
-                "token": os.getenv("SHELTER_TOKEN")
-            },
+            SHELTER_URL,
+            headers=headers,
             json=payload,
-            timeout=15
+            timeout=SHELTER_TIMEOUT,
         )
-
-        if response.status_code != 200:
-            logger.error(f"Shelter API error: {response.status_code} - {response.text}")
-            return "Извините, произошла ошибка при получении цен. Пожалуйста, попробуйте позже."
-
-        data = response.json()
-        variants = data.get("variants", [])
-
-        if not variants:
-            return "К сожалению, на выбранные даты нет доступных номеров."
-
-        # Сортируем по цене и берем три самых дешевых предложения
-        sorted_variants = sorted(variants, key=lambda x: x.get("priceRub", 0))
-        results = []
-
-        for v in sorted_variants[:3]:
-            name = v.get("name", "Номер")
-            price = v.get("priceRub", 0)
-            tariff = v.get("tariffName", "")
-            breakfast = "с завтраком" if "завтрак" in tariff.lower() else "без завтрака"
-
-            # Форматируем цену с разделителями тысяч
-            formatted_price = f"{price:,}".replace(",", " ")
-            results.append(f"• {name} — {formatted_price}₽ за весь период ({breakfast})")
-
-        nights = (datetime.strptime(date_to, "%Y-%m-%d") - datetime.strptime(date_from, "%Y-%m-%d")).days
-        date_from_formatted = format_date_russian(date_from)
-        date_to_formatted = format_date_russian(date_to)
-
-        header = f"🏨 Доступные номера на {nights} ночей ({date_from_formatted} - {date_to_formatted}):\n\n"
-
-        return header + "\n".join(results)
-
+        response.raise_for_status()
     except requests.exceptions.Timeout:
         logger.error("Shelter API timeout")
         return "Извините, сервис бронирования временно недоступен. Пожалуйста, попробуйте позже."
     except requests.exceptions.ConnectionError:
         logger.error("Shelter API connection error")
         return "Извините, нет соединения с сервисом бронирования. Пожалуйста, проверьте интернет-соединение."
-    except Exception as e:
-        logger.error("Ошибка при обращении к Shelter API: %s", e)
-        return "Извините, произошла непредвиденная ошибка. Пожалуйста, попробуйте позже или свяжитесь с администратором."
+    except requests.RequestException as exc:
+        logger.error("Shelter API error: %s", exc)
+        return "Извините, произошла ошибка при получении цен. Пожалуйста, попробуйте позже."
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("Некорректный JSON от Shelter API: %s", exc)
+        return "Извините, произошла ошибка при обработке ответа сервиса бронирования."
+
+    variants = data.get("variants") or []
+    if not variants:
+        return "К сожалению, на выбранные даты нет доступных номеров."
+
+    sorted_variants = []
+    for variant in variants:
+        price_raw = variant.get("priceRub", 0)
+        try:
+            price_value = int(price_raw)
+        except (TypeError, ValueError):
+            price_value = 0
+
+        sorted_variants.append(
+            ShelterVariant(
+                name=variant.get("name", "Номер"),
+                price_rub=price_value,
+                tariff=variant.get("tariffName", ""),
+            )
+        )
+
+    sorted_variants.sort(key=lambda item: item.price_rub)
+
+    nights = (datetime.strptime(date_to, DATE_FORMAT) - datetime.strptime(date_from, DATE_FORMAT)).days
+    date_from_formatted = format_date_russian(date_from)
+    date_to_formatted = format_date_russian(date_to)
+
+    header = f"🏨 Доступные номера на {nights} ночей ({date_from_formatted} - {date_to_formatted}):\n\n"
+    lines = [variant.format_line() for variant in sorted_variants[:3]]
+
+    return header + "\n".join(lines)
+
 
 class BookingDialog:
     """Пошаговый обработчик диалога о бронировании."""
@@ -400,12 +407,10 @@ class BookingDialog:
                 "выражения: 'завтра', 'послезавтра', 'на выходных', 'через неделю'."
             )
 
-        self.session.info["date_from"] = parsed_date.strftime("%Y-%m-%d")
+        self.session.info["date_from"] = parsed_date.strftime(DATE_FORMAT)
 
         if default_nights:
-            self.session.info["date_to"] = (
-                parsed_date + timedelta(days=default_nights)
-            ).strftime("%Y-%m-%d")
+            self.session.info["date_to"] = (parsed_date + timedelta(days=default_nights)).strftime(DATE_FORMAT)
             self.session.step = DialogStep.ADULTS_COUNT
             date_from_formatted = format_date_russian(self.session.info["date_from"])
             return self._respond(
@@ -423,23 +428,15 @@ class BookingDialog:
     def _handle_nights(self) -> dict[str, str]:
         nights = extract_number(self.text)
         if nights is None:
-            return self._respond(
-                "Пожалуйста, введите количество ночей числом (например: 2, 3, 7)."
-            )
+            return self._respond("Пожалуйста, введите количество ночей числом (например: 2, 3, 7).")
 
         if nights < MIN_STAY_DAYS:
-            return self._respond(
-                f"Количество ночей должно быть не менее {MIN_STAY_DAYS}."
-            )
+            return self._respond(f"Количество ночей должно быть не менее {MIN_STAY_DAYS}.")
         if nights > MAX_STAY_DAYS:
-            return self._respond(
-                f"Максимальный срок проживания - {MAX_STAY_DAYS} ночей."
-            )
+            return self._respond(f"Максимальный срок проживания - {MAX_STAY_DAYS} ночей.")
 
-        start_date = datetime.strptime(self.session.info["date_from"], "%Y-%m-%d")
-        self.session.info["date_to"] = (
-            start_date + timedelta(days=nights)
-        ).strftime("%Y-%m-%d")
+        start_date = datetime.strptime(self.session.info["date_from"], DATE_FORMAT)
+        self.session.info["date_to"] = (start_date + timedelta(days=nights)).strftime(DATE_FORMAT)
         self.session.step = DialogStep.ADULTS_COUNT
 
         date_from_formatted = format_date_russian(self.session.info["date_from"])
@@ -458,9 +455,7 @@ class BookingDialog:
         if adults < 1:
             return self._respond("Должен быть хотя бы один взрослый.")
         if adults > MAX_ADULTS:
-            return self._respond(
-                f"Максимальное количество взрослых - {MAX_ADULTS}."
-            )
+            return self._respond(f"Максимальное количество взрослых - {MAX_ADULTS}.")
 
         self.session.info["adults"] = adults
         max_children = MAX_TOTAL_GUESTS - adults
@@ -481,7 +476,8 @@ class BookingDialog:
         )
 
     def _parse_children_ages(self) -> list[int]:
-        if self.text.lower() in {"нет", "детей нет", "без детей"}:
+        lower = self.text.lower()
+        if lower in {"нет", "детей нет", "без детей"}:
             return []
 
         ages: list[int] = []
@@ -529,21 +525,20 @@ class BookingDialog:
 
     def handle(self) -> Optional[dict[str, str]]:
         try:
-            if self.session.step == DialogStep.INTENT_DETECTION:
-                return self._handle_intent()
-            if self.session.step == DialogStep.CHECKIN_DATE:
-                return self._handle_checkin()
-            if self.session.step == DialogStep.NIGHTS_COUNT:
-                return self._handle_nights()
-            if self.session.step == DialogStep.ADULTS_COUNT:
-                return self._handle_adults()
-            if self.session.step == DialogStep.CHILDREN_INFO:
-                return self._handle_children()
-
-            logger.warning("Неизвестный шаг диалога: %s", self.session.step)
-            return self._finish(
-                "Извините, произошла ошибка при обработке запроса. Пожалуйста, начните заново."
-            )
+            handlers = {
+                DialogStep.INTENT_DETECTION: self._handle_intent,
+                DialogStep.CHECKIN_DATE: self._handle_checkin,
+                DialogStep.NIGHTS_COUNT: self._handle_nights,
+                DialogStep.ADULTS_COUNT: self._handle_adults,
+                DialogStep.CHILDREN_INFO: self._handle_children,
+            }
+            handler = handlers.get(self.session.step)
+            if handler is None:
+                logger.warning("Неизвестный шаг диалога: %s", self.session.step)
+                return self._finish(
+                    "Извините, произошла ошибка при обработке запроса. Пожалуйста, начните заново."
+                )
+            return handler()
         except Exception as exc:  # pragma: no cover - защита от непредвиденных сбоев
             logger.error("Ошибка в handle_price_dialog: %s", exc)
             self.session.delete()
@@ -555,8 +550,5 @@ class BookingDialog:
 
 
 def handle_price_dialog(user_id: str, user_input: str, redis_client: Any) -> Optional[dict[str, str]]:
-    """Точка входа для обработки диалога по стоимости проживания."""
-
     dialog = BookingDialog(user_id=user_id, user_input=user_input, redis_client=redis_client)
     return dialog.handle()
-

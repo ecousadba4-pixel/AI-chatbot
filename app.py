@@ -31,6 +31,7 @@ deps: Dependencies = create_dependencies(settings)
 app = Flask(__name__)
 CORS(app)
 
+CANCEL_COMMANDS = {"отмена", "сброс", "начать заново", "стоп", "reset"}
 ERROR_MESSAGE = "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
 DEFAULT_COLLECTIONS = list(settings.default_collections)
 
@@ -123,8 +124,14 @@ def _collect_public_endpoints() -> list[str]:
 # ----------------------------
 # ОСНОВНАЯ ЛОГИКА
 # ----------------------------
+def _json_reply(session_id: str, message: str, **extra: Any):
+    payload = {"response": message, "session_id": session_id}
+    payload.update(extra)
+    return jsonify(payload)
+
+
 def _build_context(results: list[SearchResult]) -> str:
-    return "\n\n".join(result.text for result in results) or ""
+    return "\n\n".join(result.text for result in results)
 
 
 def _generate_response(context: str, question: str) -> str:
@@ -185,27 +192,20 @@ def chat() -> Any:
     session_id = data.get("session_id") or os.urandom(16).hex()
 
     if not question:
-        return jsonify({"response": "Пожалуйста, введите вопрос."})
+        return _json_reply(session_id, "Пожалуйста, введите вопрос.")
 
     print(f"\n💬 Вопрос [{session_id[:8]}]: {question}")
 
-    if question.lower() in {"отмена", "сброс", "начать заново", "стоп", "reset"}:
+    if question.lower() in CANCEL_COMMANDS:
         deps.redis.delete(f"booking_session:{session_id}")
-        return jsonify(
-            {
-                "response": "Диалог сброшен. Чем могу помочь?",
-                "session_id": session_id,
-            }
-        )
+        return _json_reply(session_id, "Диалог сброшен. Чем могу помочь?")
 
     booking_result = handle_price_dialog(session_id, question, deps.redis)
     if booking_result:
-        return jsonify(
-            {
-                "response": booking_result["answer"],
-                "session_id": session_id,
-                "mode": booking_result.get("mode", "booking"),
-            }
+        return _json_reply(
+            session_id,
+            booking_result["answer"],
+            mode=booking_result.get("mode", "booking"),
         )
 
     normalized = normalize_text(question, deps.morph)
@@ -224,12 +224,10 @@ def chat() -> Any:
 
     if not search_results:
         print("❌ Ничего не найдено ни в одной коллекции")
-        return jsonify(
-            {
-                "response": "Извините, не нашёл информации по вашему вопросу. "
-                "Попробуйте переформулировать или свяжитесь с администратором.",
-                "session_id": session_id,
-            }
+        return _json_reply(
+            session_id,
+            "Извините, не нашёл информации по вашему вопросу. "
+            "Попробуйте переформулировать или свяжитесь с администратором.",
         )
 
     print("\n📊 Топ-результаты:")
@@ -242,12 +240,10 @@ def chat() -> Any:
     context = _build_context(search_results[:3])
     if not context.strip():
         print("⚠️ Контекст пуст после извлечения payload['text']")
-        return jsonify(
-            {
-                "response": "Извините, не удалось сформировать ответ. "
-                "Попробуйте переформулировать вопрос.",
-                "session_id": session_id,
-            }
+        return _json_reply(
+            session_id,
+            "Извините, не удалось сформировать ответ. "
+            "Попробуйте переформулировать вопрос.",
         )
 
     print(f"\n📄 Итоговый контекст ({len(context)} символов):\n{context[:300]}...\n")
@@ -255,17 +251,15 @@ def chat() -> Any:
     answer = _generate_response(context, question)
     print(f"✅ Ответ сгенерирован: {answer[:100]}...\n")
 
-    return jsonify(
-        {
-            "response": answer,
-            "session_id": session_id,
-            "debug_info": {
-                "top_collection": search_results[0].collection,
-                "top_score": search_results[0].score,
-                "results_count": len(search_results),
-                "embedding_dim": len(query_embedding),
-            },
-        }
+    return _json_reply(
+        session_id,
+        answer,
+        debug_info={
+            "top_collection": search_results[0].collection,
+            "top_score": search_results[0].score,
+            "results_count": len(search_results),
+            "embedding_dim": len(query_embedding),
+        },
     )
 
 
