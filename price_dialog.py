@@ -1,3 +1,5 @@
+"""Диалог бронирования номеров и обращение к Shelter API."""
+
 from __future__ import annotations
 
 import json
@@ -14,8 +16,6 @@ import requests
 from dateutil.relativedelta import SA, relativedelta
 
 logger = logging.getLogger(__name__)
-
-MORPH = pymorphy3.MorphAnalyzer()
 
 PRICE_KEYWORD_LEMMAS = {
     "цена",
@@ -40,12 +40,12 @@ SHELTER_TIMEOUT = 15
 DATE_FORMAT = "%Y-%m-%d"
 
 
-def _normalize_words(text: str) -> set[str]:
+def _normalize_words(text: str, morph: pymorphy3.MorphAnalyzer) -> set[str]:
     tokens = re.findall(r"[а-яёa-z]+", text.lower())
     lemmas: set[str] = set()
     for token in tokens:
         try:
-            parsed = MORPH.parse(token)
+            parsed = morph.parse(token)
         except Exception:  # pragma: no cover - защита от редких сбоев pymorphy
             parsed = None
         lemmas.add(parsed[0].normal_form if parsed else token)
@@ -366,14 +366,17 @@ def get_room_price_from_shelter(
 class BookingDialog:
     """Пошаговый обработчик диалога о бронировании."""
 
-    def __init__(self, user_id: str, user_input: str, redis_client: Any) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        user_input: str,
+        redis_client: Any,
+        morph: pymorphy3.MorphAnalyzer,
+    ) -> None:
         self.text = user_input.strip()
+        self.morph = morph
         self.session = BookingSession.load(user_id=user_id, redis_client=redis_client)
         self.session.touch()
-
-    @property
-    def redis(self) -> Any:
-        return self.session.redis_client
 
     def _respond(self, message: str) -> dict[str, str]:
         self.session.save()
@@ -384,7 +387,7 @@ class BookingDialog:
         return {"answer": message, "mode": "booking"}
 
     def _is_booking_intent(self) -> bool:
-        normalized_words = _normalize_words(self.text)
+        normalized_words = _normalize_words(self.text, self.morph)
         has_keyword = bool(PRICE_KEYWORD_LEMMAS & normalized_words)
         has_phrase = any(phrase in self.text.lower() for phrase in PRICE_KEYWORD_PHRASES)
         return has_keyword or has_phrase
@@ -525,22 +528,24 @@ class BookingDialog:
 
     def handle(self) -> Optional[dict[str, str]]:
         try:
-            handlers = {
-                DialogStep.INTENT_DETECTION: self._handle_intent,
-                DialogStep.CHECKIN_DATE: self._handle_checkin,
-                DialogStep.NIGHTS_COUNT: self._handle_nights,
-                DialogStep.ADULTS_COUNT: self._handle_adults,
-                DialogStep.CHILDREN_INFO: self._handle_children,
-            }
-            handler = handlers.get(self.session.step)
-            if handler is None:
-                logger.warning("Неизвестный шаг диалога: %s", self.session.step)
-                return self._finish(
-                    "Извините, произошла ошибка при обработке запроса. Пожалуйста, начните заново."
-                )
-            return handler()
-        except Exception as exc:  # pragma: no cover - защита от непредвиденных сбоев
-            logger.error("Ошибка в handle_price_dialog: %s", exc)
+            step = self.session.step
+            if step is DialogStep.INTENT_DETECTION:
+                return self._handle_intent()
+            if step is DialogStep.CHECKIN_DATE:
+                return self._handle_checkin()
+            if step is DialogStep.NIGHTS_COUNT:
+                return self._handle_nights()
+            if step is DialogStep.ADULTS_COUNT:
+                return self._handle_adults()
+            if step is DialogStep.CHILDREN_INFO:
+                return self._handle_children()
+
+            logger.warning("Неизвестный шаг диалога: %s", step)
+            return self._finish(
+                "Извините, произошла ошибка при обработке запроса. Пожалуйста, начните заново."
+            )
+        except Exception:  # pragma: no cover - защита от непредвиденных сбоев
+            logger.exception("Ошибка в handle_price_dialog")
             self.session.delete()
             return {
                 "answer": "Извините, произошла ошибка при обработке запроса. "
@@ -549,6 +554,28 @@ class BookingDialog:
             }
 
 
-def handle_price_dialog(user_id: str, user_input: str, redis_client: Any) -> Optional[dict[str, str]]:
-    dialog = BookingDialog(user_id=user_id, user_input=user_input, redis_client=redis_client)
+def handle_price_dialog(
+    user_id: str,
+    user_input: str,
+    redis_client: Any,
+    morph: pymorphy3.MorphAnalyzer,
+) -> Optional[dict[str, str]]:
+    dialog = BookingDialog(
+        user_id=user_id,
+        user_input=user_input,
+        redis_client=redis_client,
+        morph=morph,
+    )
     return dialog.handle()
+
+
+__all__ = [
+    "DialogStep",
+    "BookingSession",
+    "ShelterVariant",
+    "handle_price_dialog",
+    "get_room_price_from_shelter",
+    "parse_natural_date",
+    "validate_dates",
+    "validate_guests",
+]
