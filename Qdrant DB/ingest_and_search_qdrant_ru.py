@@ -5,7 +5,7 @@ ingest_and_search_qdrant_ru.py
 Заливает JSON из ./processed в Qdrant (Amvera/локально) и позволяет сделать гибридный поиск.
 
 Особенности:
-- Эмбеддинги для ai-forever/frida-sbert-base-nlu-ru через sentence-transformers (mean pooling + L2).
+- Эмбеддинги для d0rj/e5-base-en-ru через sentence-transformers (mean pooling + L2).
 - Кэш энкодера (модель грузится один раз).
 - Автосборка QDRANT_URL из QDRANT_HOST/QDRANT_PORT/QDRANT_HTTPS, если QDRANT_URL не задан.
 - Безопасное пересоздание коллекции (delete -> create), batch-upsert.
@@ -91,7 +91,7 @@ BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "processed"
 
 # Модель эмбеддингов по умолчанию скачиваем из Hugging Face
-DEFAULT_EMBEDDING_MODEL_NAME = "ai-forever/frida-sbert-base-nlu-ru"
+DEFAULT_EMBEDDING_MODEL_NAME = "d0rj/e5-base-en-ru"
 EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL_NAME
 )
@@ -126,9 +126,21 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")        # может быть пус
 COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hotel_knowledge")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Encoder: SentenceTransformer с единым загрузчиком
+# Encoder: SentenceTransformer с единым загрузчиком и форматированием текста
 # ─────────────────────────────────────────────────────────────────────────────
 _ENCODER_SINGLETON = None  # кэш энкодера
+
+
+def _format_query_text(text: str) -> str:
+    """Подготовить текст запроса для совместимых моделей (e5-style)."""
+    cleaned = text.strip()
+    return f"query: {cleaned}" if cleaned else "query:"
+
+
+def _format_passage_text(text: str) -> str:
+    """Подготовить текст документа перед кодированием в эмбеддинг."""
+    cleaned = text.strip()
+    return f"passage: {cleaned}" if cleaned else "passage:"
 
 
 
@@ -302,8 +314,9 @@ def ingest(recreate: bool = False):
         nonlocal batch_texts, batch_payloads, batch_ids
         if not batch_texts:
             return
+        formatted_batch = [_format_passage_text(text) for text in batch_texts]
         vecs = encoder.encode(
-            batch_texts,
+            formatted_batch,
             batch_size=16,
             convert_to_numpy=True,
             normalize_embeddings=True,
@@ -421,8 +434,9 @@ def search(query: str,
     check_qdrant_alive(client)
 
     encoder = get_encoder()
+    formatted_query = _format_query_text(query)
     qv = encoder.encode(
-        [query],
+        [formatted_query],
         batch_size=8,
         convert_to_numpy=True,
         normalize_embeddings=True,
