@@ -7,8 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     TOKENIZERS_PARALLELISM=false \
-    APP_DATA_DIR=/app/Data \
-    EMBEDDING_MODEL_NAME=sberbank-ai/sbert_large_nlu_ru
+    EMBEDDING_MODEL_NAME=ai-forever/sbert-base-lite-nlu-ru-v2
 
 WORKDIR /app
 
@@ -27,7 +26,7 @@ RUN pip install --upgrade pip setuptools wheel \
 # Код приложения и утилиты
 COPY . .
 
-# Прогрев модели (использует уже скопированные локальные веса, если они есть)
+# Прогрев модели: загрузим веса из Hugging Face на этапе сборки контейнера
 RUN python -m tools.preload_model
 
 # Безопасность: нерутовый пользователь
