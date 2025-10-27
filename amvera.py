@@ -1,10 +1,11 @@
-"""Вспомогательные функции для обращения к Amvera GPT API."""
+"""Вспомогательные утилиты для работы с Amvera API."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import requests
 
