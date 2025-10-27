@@ -43,7 +43,6 @@ AMVERA_AUTH_PREFIX = "Bearer"
 
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = int(os.getenv("REDIS_PORT"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 def _filter_existing_collections(
     client: QdrantClient,
@@ -85,9 +84,7 @@ def _filter_existing_collections(
 # ----------------------------
 # CONNECTIONS
 # ----------------------------
-redis_client = redis.Redis(
-    host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
-)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 morph = pymorphy3.MorphAnalyzer()
 

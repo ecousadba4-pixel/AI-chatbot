@@ -36,10 +36,9 @@ run:
     QDRANT_HTTPS: "false"
     QDRANT_API_KEY: "${QDRANT_API_KEY}"   # если не нужен — оставь пустым в панели
 
-    # --- Redis (внутренний сервис Amvera) ---
+    # --- Redis (внутренний сервис Amvera, пароль не требуется) ---
     REDIS_HOST: "amvera-karinausadba-run-hotelbot-redis"
     REDIS_PORT: "6379"
-    REDIS_PASSWORD: "${REDIS_PASSWORD}"   # если без пароля — можно убрать ключ
 
     # --- Amvera GPT (твой шлюз) ---
     AMVERA_GPT_URL: "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
@@ -62,6 +61,5 @@ run:
 
   secrets:
     - name: QDRANT_API_KEY
-    - name: REDIS_PASSWORD
     - name: AMVERA_GPT_TOKEN
     - name: SHELTER_TOKEN
