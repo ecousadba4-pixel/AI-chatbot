@@ -171,21 +171,15 @@ redis_client = redis.Redis(
 
 morph = pymorphy3.MorphAnalyzer()
 
-# >>> ГЛАВНОЕ ИЗМЕНЕНИЕ: русская крупная модель эмбеддингов <<<
-# Размер эмбеддинга = 1024
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sberbank-ai/sbert_large_nlu_ru")
-EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH")
-ALLOW_EMBEDDING_DOWNLOAD = os.getenv("ALLOW_EMBEDDING_DOWNLOAD", "false").lower() in ("1", "true", "yes")
+# >>> ГЛАВНОЕ ИЗМЕНЕНИЕ: русская модель эмбеддингов <<<
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME", "ai-forever/sbert-base-lite-nlu-ru-v2"
+)
 
 
 model = resolve_embedding_model(
     model_name=EMBEDDING_MODEL_NAME,
-    candidate_paths=[
-        EMBEDDING_MODEL_PATH,
-        "/app/data/sberbank-ai/sbert_large_nlu_ru",
-        "/data/sberbank-ai/sbert_large_nlu_ru",
-    ],
-    allow_download=ALLOW_EMBEDDING_DOWNLOAD,
+    allow_download=True,
 )
 
 qdrant_client = QdrantClient(

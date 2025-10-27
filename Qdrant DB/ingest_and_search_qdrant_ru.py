@@ -5,9 +5,8 @@ ingest_and_search_qdrant_ru.py
 Заливает JSON из ./processed в Qdrant (Amvera/локально) и позволяет сделать гибридный поиск.
 
 Особенности:
-- Эмбеддинги для sberbank-ai/sbert_large_nlu_ru через sentence-transformers (mean pooling + L2).
+- Эмбеддинги для ai-forever/sbert-base-lite-nlu-ru-v2 через sentence-transformers (mean pooling + L2).
 - Кэш энкодера (модель грузится один раз).
-- Локальная загрузка модели: EMBEDDING_MODEL_PATH (и совместимость с HF_MODEL_LOCAL_DIR/HF_LOCAL_ONLY).
 - Автосборка QDRANT_URL из QDRANT_HOST/QDRANT_PORT/QDRANT_HTTPS, если QDRANT_URL не задан.
 - Безопасное пересоздание коллекции (delete -> create), batch-upsert.
 - Нормализованные эмбеддинги (COSINE).
@@ -73,104 +72,17 @@ if not _HELPER_IMPORTED:
     # (например, при ручном копировании ingest_and_search_qdrant_ru.py).
     from sentence_transformers import SentenceTransformer
 
-    def _expand_candidate_paths(
-        candidate_paths: Optional[Iterable[Optional[str]]],
-    ) -> list[str]:
-        """Фильтруем и расширяем кандидаты путей, оставляя существующие."""
-
-        if not candidate_paths:
-            return []
-
-        paths: list[str] = []
-        seen: set[str] = set()
-        for raw in candidate_paths:
-            if not raw:
-                continue
-            expanded = os.path.expanduser(os.path.expandvars(str(raw)))
-            if not os.path.exists(expanded):
-                continue
-            if expanded in seen:
-                continue
-            seen.add(expanded)
-            paths.append(expanded)
-        return paths
-
-    def _default_model_search_paths(model_name: str) -> list[str]:
-        """Дополнительные директории для поиска локальной модели."""
-
-        model_relative = Path(*model_name.split("/"))
-        search_roots: list[Path] = []
-
-        for env_var in ("EMBEDDING_MODEL_DIR", "APP_DATA_DIR", "DATA_DIR"):
-            env_path = os.getenv(env_var)
-            if env_path:
-                search_roots.append(Path(env_path))
-
-        search_roots.extend(
-            [
-                _HERE / "Data",
-                _HERE / "data",
-                _HERE.parent / "Data",
-                _HERE.parent / "data",
-                Path("/app/Data"),
-                Path("/app/data"),
-                Path("/data"),
-                Path("C:/models"),
-                Path("D:/models"),
-                Path.home() / "models",
-            ]
-        )
-
-        candidates: list[str] = []
-        seen: set[str] = set()
-        for root in search_roots:
-            for suffix in (model_relative, Path(model_relative.name)):
-                candidate = root / suffix
-                candidate_str = os.fspath(candidate)
-                if candidate_str in seen:
-                    continue
-                seen.add(candidate_str)
-                candidates.append(candidate_str)
-        return candidates
-
-    def resolve_embedding_model(
-        model_name: str,
-        candidate_paths: Optional[Iterable[Optional[str]]] = None,
-        *,
-        allow_download: bool = True,
-    ):
-        """Минимальный загрузчик модели эмбеддингов.
-
-        Сначала пробует локальные пути (если указаны), иначе скачивает модель
-        по имени через SentenceTransformer. Поведение соответствует прежнему
-        вспомогательному модулю, но без расширенного поиска.
-        """
-
-        search_candidates: list[str] = []
-        search_candidates.extend(_expand_candidate_paths(candidate_paths))
-        search_candidates.extend(
-            _expand_candidate_paths(_default_model_search_paths(model_name))
-        )
-
-        for path in search_candidates:
-            try:
-                return SentenceTransformer(path)
-            except Exception:
-                continue
+    def resolve_embedding_model(*, model_name: str, allow_download: bool = True):
+        """Минимальный загрузчик модели эмбеддингов."""
 
         if not allow_download:
-            searched = (
-                "\n".join(f" - {p}" for p in search_candidates)
-                or " - (список путей пуст)"
-            )
             raise FileNotFoundError(
-                "Не удалось найти локальную модель эмбеддингов. Укажите переменную окружения "
-                "EMBEDDING_MODEL_PATH (или другие пути) и убедитесь, что модель располагается "
-                "в одном из следующих путей:\n"
-                f"{searched}"
+                "Загрузка модели из облака запрещена, альтернативы не предусмотрены."
             )
 
         return SentenceTransformer(model_name)
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Конфигурация путей и коллекции
@@ -178,19 +90,11 @@ if not _HELPER_IMPORTED:
 BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_DIR = BASE_DIR / "processed"
 
-# Модель эмбеддингов берём только из фиксированного локального пути
-FIXED_EMBEDDING_MODEL_PATH = os.path.normpath(r"C:\models\sbert_large_nlu_ru")
-EMBEDDING_MODEL_NAME = FIXED_EMBEDDING_MODEL_PATH
-EMBEDDING_MODEL_PATH = FIXED_EMBEDDING_MODEL_PATH
-
-
-def _as_bool(value: Optional[str], default: bool = True) -> bool:
-    if value is None:
-        return default
-    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-ALLOW_EMBEDDING_DOWNLOAD = False
+# Модель эмбеддингов по умолчанию скачиваем из Hugging Face
+DEFAULT_EMBEDDING_MODEL_NAME = "ai-forever/sbert-base-lite-nlu-ru-v2"
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL_NAME
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Загрузка .env и сборка QDRANT_URL
@@ -227,31 +131,18 @@ COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hot
 _ENCODER_SINGLETON = None  # кэш энкодера
 
 
-def _candidate_model_paths(model_name: str) -> list[str]:
-    """Возвращаем только фиксированный путь к локальной модели."""
-
-    return [EMBEDDING_MODEL_PATH]
 
 
 def get_encoder():
     global _ENCODER_SINGLETON
     if _ENCODER_SINGLETON is None:
-        if not os.path.exists(EMBEDDING_MODEL_PATH):
-            raise FileNotFoundError(
-                "Локальная модель эмбеддингов не найдена. "
-                "Ожидался путь C\\models\\sbert_large_nlu_ru."
-            )
-        candidates = _candidate_model_paths(EMBEDDING_MODEL_NAME)
         _ENCODER_SINGLETON = resolve_embedding_model(
             model_name=EMBEDDING_MODEL_NAME,
-            candidate_paths=candidates,
-            allow_download=ALLOW_EMBEDDING_DOWNLOAD,
+            allow_download=True,
         )
         dim = _ENCODER_SINGLETON.get_sentence_embedding_dimension()
-        print(
-            f"[Encoder] Загружена модель из {EMBEDDING_MODEL_PATH} "
-            f"(dim={dim})"
-        )
+        resolved = getattr(_ENCODER_SINGLETON, "_resolved_from", EMBEDDING_MODEL_NAME)
+        print(f"[Encoder] Загружена модель {resolved} (dim={dim})")
     return _ENCODER_SINGLETON
 
 # ─────────────────────────────────────────────────────────────────────────────
