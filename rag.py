@@ -1,32 +1,45 @@
-"""Функции для поиска релевантной информации."""
+"""Инструменты поиска релевантных ответов в Qdrant."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from heapq import nlargest
+import re
 from typing import Any, Iterable, Sequence
 
 import numpy as np
 from qdrant_client import QdrantClient
 
 
+_WORD_PATTERN = re.compile(r"[а-яёa-z0-9]+")
+
+
 @dataclass(slots=True)
 class SearchResult:
+    """Найденный документ в Qdrant."""
+
     collection: str
     score: float
     text: str
 
 
 def normalize_text(text: str, morph) -> str:
-    """Базовая лемматизация/нормализация вопроса."""
+    """Привести текст к леммам, устойчиво к сбоям морфологического анализа."""
 
-    import re
+    lemmas: list[str] = []
+    for word in _WORD_PATTERN.findall(text.lower()):
+        try:
+            parsed = morph.parse(word)
+        except Exception:  # pragma: no cover - страховка от редких сбоев pymorphy
+            parsed = None
 
-    words = re.findall(r"[а-яёa-z0-9]+", text.lower())
-    lemmas = [morph.parse(word)[0].normal_form for word in words]
+        lemma = parsed[0].normal_form if parsed else word
+        lemmas.append(lemma)
+
     return " ".join(lemmas)
 
 
 def encode(text: str, model) -> list[float]:
-    """Кодирование текста в эмбеддинг."""
+    """Кодирование текста в эмбеддинг с приведением к list."""
 
     vector = model.encode(text)
     if isinstance(vector, np.ndarray):
@@ -37,9 +50,9 @@ def encode(text: str, model) -> list[float]:
 
 
 def extract_payload_text(payload: dict[str, Any]) -> str:
-    """Извлечь человекочитаемый текст из результата Qdrant."""
+    """Извлечь человекочитаемый текст из полезной нагрузки Qdrant."""
 
-    text = payload.get("text") or payload.get("text_bm25") or ""
+    text = payload.get("text") or payload.get("text_bm25")
     if text:
         return text
 
@@ -47,7 +60,7 @@ def extract_payload_text(payload: dict[str, Any]) -> str:
     if isinstance(raw, dict):
         text_blocks = raw.get("text_blocks")
         if isinstance(text_blocks, dict):
-            combined = "\n".join(str(v) for v in text_blocks.values() if v)
+            combined = "\n".join(str(value) for value in text_blocks.values() if value)
             if combined:
                 return combined
 
@@ -71,10 +84,10 @@ def search_all_collections(
     *,
     limit: int = 5,
 ) -> list[SearchResult]:
-    """Поиск по всем коллекциям с объединением результатов."""
+    """Поиск по нескольким коллекциям с агрегацией лучших результатов."""
 
-    results: list[SearchResult] = []
     embedding_vector = list(query_embedding)
+    aggregated: list[SearchResult] = []
 
     for collection in collections:
         try:
@@ -89,16 +102,18 @@ def search_all_collections(
 
         for hit in search_response:
             payload = hit.payload or {}
-            results.append(
+            text = extract_payload_text(payload)
+            if not text:
+                continue
+            aggregated.append(
                 SearchResult(
                     collection=collection,
                     score=hit.score,
-                    text=extract_payload_text(payload),
+                    text=text,
                 )
             )
 
-    results.sort(key=lambda item: item.score, reverse=True)
-    return results[:limit]
+    return nlargest(limit, aggregated, key=lambda item: item.score)
 
 
 __all__ = [
