@@ -27,12 +27,15 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости (кэшируем слой)
-COPY requirements.txt .
+COPY requirements.txt pyproject.toml ./
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt
 
 # Код приложения и утилиты
 COPY . .
+
+# Устанавливаем проект как пакет, чтобы модули были доступны по импортам
+RUN pip install --no-cache-dir .
 
 # Прогрев модели: загрузим веса из Hugging Face на этапе сборки контейнера
 RUN python -m tools.preload_model
