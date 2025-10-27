@@ -123,7 +123,7 @@ else:
 
 QDRANT_URL = os.getenv("QDRANT_URL", default_url)
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")        # может быть пустым на локали
-COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hotel_ru")
+COLLECTION = os.getenv("QDRANT_COLLECTION") or os.getenv("COLLECTION_NAME", "hotel_knowledge")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Encoder: SentenceTransformer с единым загрузчиком
