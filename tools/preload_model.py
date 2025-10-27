@@ -26,7 +26,11 @@ def main() -> None:
         raise RuntimeError(
             "Переменная окружения EMBEDDING_MODEL_NAME должна быть установлена перед прогревом модели."
         )
-    model = resolve_embedding_model(model_name=model_name, allow_download=True)
+    model = resolve_embedding_model(
+        model_name=model_name,
+        local_path=os.getenv("EMBEDDING_MODEL_LOCAL_PATH") or None,
+        allow_download=True,
+    )
 
     # Run a dummy encode with e5-совместимыми префиксами, чтобы прогреть модель.
     model.encode(["query: warmup", "passage: warmup"])

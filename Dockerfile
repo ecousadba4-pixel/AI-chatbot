@@ -12,9 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
 
 ARG EMBEDDING_MODEL_NAME=d0rj/e5-base-en-ru
-ARG ENABLE_MODEL_WARMUP=false
-ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME} \
-    ENABLE_MODEL_WARMUP=${ENABLE_MODEL_WARMUP}
+ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
 
 WORKDIR /app
 
@@ -39,12 +37,7 @@ COPY . .
 # Устанавливаем проект как пакет, чтобы модули были доступны по импортам
 RUN pip install --no-cache-dir .
 
-# Прогрев модели: загрузим веса из Hugging Face на этапе сборки контейнера
-RUN if [ "$ENABLE_MODEL_WARMUP" = "true" ]; then \
-        python -m tools.preload_model; \
-    else \
-        echo "Skipping embedding model warmup"; \
-    fi
+# Прогрев модели отключён: при необходимости можно выполнить tools/preload_model.py вручную
 
 # Настройки оффлайн-режима: по умолчанию отключены, чтобы при пропуске прогрева
 # рантайм мог скачать модели при старте контейнера.

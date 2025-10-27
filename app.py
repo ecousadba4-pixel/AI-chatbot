@@ -48,6 +48,8 @@ def _log_startup_information() -> None:
         "🔢 Embedding dimension:",
         deps.embedding_model.get_sentence_embedding_dimension(),
     )
+    resolved_from = getattr(deps.embedding_model, "_resolved_from", settings.embedding_model)
+    print(f"📦 Источник модели эмбеддингов: {resolved_from}")
     print(
         f"🤖 Amvera GPT endpoint: {settings.amvera_url} (model={settings.amvera_model})"
     )
@@ -464,6 +466,9 @@ def home() -> Any:
             "features": ["RAG", "Booking Dialog", "Redis Cache"],
             "embedding_model": settings.embedding_model,
             "embedding_dim": deps.embedding_model.get_sentence_embedding_dimension(),
+            "embedding_source": getattr(
+                deps.embedding_model, "_resolved_from", settings.embedding_model
+            ),
             "endpoints": _collect_public_endpoints(),
         }
     )

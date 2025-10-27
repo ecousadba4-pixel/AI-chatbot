@@ -50,6 +50,7 @@ class Settings:
     redis_port: int
 
     embedding_model: str
+    embedding_model_path: str | None
 
     amvera_url: str
     amvera_model: str | None
@@ -83,6 +84,8 @@ class Settings:
                 "Переменная окружения EMBEDDING_MODEL_NAME должна быть установлена для запуска приложения."
             )
 
+        embedding_model_path = os.getenv("EMBEDDING_MODEL_LOCAL_PATH") or None
+
         amvera_url = _get_env("AMVERA_GPT_URL")
         if amvera_url is None:
             raise RuntimeError(
@@ -97,6 +100,7 @@ class Settings:
             redis_host=redis_host,
             redis_port=redis_port,
             embedding_model=embedding_model,
+            embedding_model_path=embedding_model_path,
             amvera_url=amvera_url,
             amvera_model=os.getenv("AMVERA_GPT_MODEL") or None,
             amvera_token=os.getenv("AMVERA_GPT_TOKEN") or None,
