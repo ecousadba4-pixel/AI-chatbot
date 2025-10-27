@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 
 import pymorphy3
 import redis
@@ -24,17 +25,28 @@ class Dependencies:
 def create_dependencies(settings: Settings) -> Dependencies:
     """Создать и сконфигурировать все внешние сервисы."""
 
+    embedding_start = perf_counter()
     embedding_model = resolve_embedding_model(
         model_name=settings.embedding_model,
         allow_download=True,
     )
+    embedding_duration = perf_counter() - embedding_start
+    print(f"⏱️ Загрузка модели эмбеддингов заняла {embedding_duration:.2f} с")
 
+    qdrant_start = perf_counter()
     qdrant_client = QdrantClient(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
         api_key=settings.qdrant_api_key or None,
         https=settings.qdrant_https,
     )
+    qdrant_duration = perf_counter() - qdrant_start
+    print(f"⏱️ Инициализация клиента Qdrant заняла {qdrant_duration:.2f} с")
+
+    morph_start = perf_counter()
+    morph_analyzer = pymorphy3.MorphAnalyzer()
+    morph_duration = perf_counter() - morph_start
+    print(f"⏱️ Создание MorphAnalyzer заняло {morph_duration:.2f} с")
 
     redis_client = redis.Redis(
         host=settings.redis_host,
@@ -45,7 +57,7 @@ def create_dependencies(settings: Settings) -> Dependencies:
     return Dependencies(
         qdrant=qdrant_client,
         redis=redis_client,
-        morph=pymorphy3.MorphAnalyzer(),
+        morph=morph_analyzer,
         embedding_model=embedding_model,
     )
 
