@@ -37,6 +37,11 @@ COPY . .
 # Прогрев модели: загрузим веса из Hugging Face на этапе сборки контейнера
 RUN python -m tools.preload_model
 
+# После прогрева переходим в оффлайн-режим, чтобы рантайм не пытался обращаться к интернету
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    SENTENCE_TRANSFORMERS_OFFLINE=1
+
 # Безопасность: нерутовый пользователь
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
