@@ -89,9 +89,11 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=Tr
 morph = pymorphy3.MorphAnalyzer()
 
 # >>> ГЛАВНОЕ ИЗМЕНЕНИЕ: русская модель эмбеддингов <<<
-EMBEDDING_MODEL_NAME = os.getenv(
-    "EMBEDDING_MODEL_NAME", "ai-forever/sbert-base-lite-nlu-ru-v2"
-)
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME")
+if not EMBEDDING_MODEL_NAME:
+    raise RuntimeError(
+        "Переменная окружения EMBEDDING_MODEL_NAME должна быть установлена для запуска приложения."
+    )
 
 
 model = resolve_embedding_model(
