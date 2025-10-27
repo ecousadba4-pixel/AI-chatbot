@@ -2,7 +2,12 @@ import os
 import multiprocessing
 
 # Количество worker-процессов
-workers = int(os.getenv("GUNICORN_WORKERS", "2"))
+_workers_raw = os.getenv("GUNICORN_WORKERS")
+if _workers_raw is None:
+    raise RuntimeError(
+        "Переменная окружения GUNICORN_WORKERS должна быть установлена перед запуском gunicorn."
+    )
+workers = int(_workers_raw)
 
 # Тип worker'ов
 worker_class = "sync"

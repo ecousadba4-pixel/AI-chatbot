@@ -31,11 +31,19 @@ ERROR_MESSAGE = "Извините, не удалось получить отве
 QDRANT_HOST = os.getenv("QDRANT_HOST")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
-QDRANT_HTTPS = os.getenv("QDRANT_HTTPS", "false").lower() in ("1", "true", "yes")
 
-AMVERA_GPT_URL = os.getenv(
-    "AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
-)
+_qdrant_https_raw = os.getenv("QDRANT_HTTPS")
+if _qdrant_https_raw is None:
+    raise RuntimeError(
+        "Переменная окружения QDRANT_HTTPS должна быть установлена для запуска приложения."
+    )
+QDRANT_HTTPS = _qdrant_https_raw.lower() in ("1", "true", "yes")
+
+AMVERA_GPT_URL = os.getenv("AMVERA_GPT_URL")
+if not AMVERA_GPT_URL:
+    raise RuntimeError(
+        "Переменная окружения AMVERA_GPT_URL должна быть установлена для запуска приложения."
+    )
 AMVERA_GPT_MODEL = os.getenv("AMVERA_GPT_MODEL")
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
 AMVERA_AUTH_HEADER = "X-Auth-Token"
@@ -105,7 +113,7 @@ qdrant_client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
     api_key=QDRANT_API_KEY,
-    https=QDRANT_HTTPS  # по умолчанию false для внутреннего домена; можно включить через переменные
+    https=QDRANT_HTTPS,
 )
 
 print(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (https={QDRANT_HTTPS})")

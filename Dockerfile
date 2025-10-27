@@ -6,8 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
-    TOKENIZERS_PARALLELISM=false \
-    EMBEDDING_MODEL_NAME=ai-forever/sbert-base-lite-nlu-ru-v2
+    TOKENIZERS_PARALLELISM=false
 
 WORKDIR /app
 
