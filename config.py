@@ -14,8 +14,10 @@ def _get_env(name: str, *, required: bool = True) -> str | None:
     return value
 
 
-def _parse_int(value: str | None, *, name: str) -> int:
+def _parse_int(value: str | None, *, name: str, default: int | None = None) -> int:
     if value is None:
+        if default is not None:
+            return default
         raise RuntimeError(f"Переменная окружения {name} должна быть установлена.")
     try:
         return int(value)
@@ -25,8 +27,10 @@ def _parse_int(value: str | None, *, name: str) -> int:
         ) from exc
 
 
-def _parse_bool(value: str | None) -> bool:
+def _parse_bool(value: str | None, *, default: bool | None = None) -> bool:
     if value is None:
+        if default is not None:
+            return default
         raise RuntimeError(
             "Переменная окружения QDRANT_HTTPS должна быть установлена для запуска приложения."
         )
@@ -60,12 +64,18 @@ class Settings:
         """Собрать настройки из переменных окружения с валидацией."""
 
         qdrant_host = _get_env("QDRANT_HOST", required=False) or "localhost"
-        qdrant_port = _parse_int(os.getenv("QDRANT_PORT"), name="QDRANT_PORT")
+        qdrant_port = _parse_int(
+            os.getenv("QDRANT_PORT"), name="QDRANT_PORT", default=6333
+        )
         qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
-        qdrant_https = _parse_bool(os.getenv("QDRANT_HTTPS"))
+        qdrant_https = _parse_bool(
+            os.getenv("QDRANT_HTTPS"), default=False
+        )
 
         redis_host = _get_env("REDIS_HOST", required=False) or "localhost"
-        redis_port = _parse_int(os.getenv("REDIS_PORT"), name="REDIS_PORT")
+        redis_port = _parse_int(
+            os.getenv("REDIS_PORT"), name="REDIS_PORT", default=6379
+        )
 
         embedding_model = _get_env("EMBEDDING_MODEL_NAME")
         if embedding_model is None:
