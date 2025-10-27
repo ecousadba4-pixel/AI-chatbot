@@ -12,7 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
 
 ARG EMBEDDING_MODEL_NAME=d0rj/e5-base-en-ru
-ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
+ARG ENABLE_MODEL_WARMUP=false
+ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME} \
+    ENABLE_MODEL_WARMUP=${ENABLE_MODEL_WARMUP}
 
 WORKDIR /app
 
@@ -38,12 +40,17 @@ COPY . .
 RUN pip install --no-cache-dir .
 
 # Прогрев модели: загрузим веса из Hugging Face на этапе сборки контейнера
-RUN python -m tools.preload_model
+RUN if [ "$ENABLE_MODEL_WARMUP" = "true" ]; then \
+        python -m tools.preload_model; \
+    else \
+        echo "Skipping embedding model warmup"; \
+    fi
 
-# После прогрева переходим в оффлайн-режим, чтобы рантайм не пытался обращаться к интернету
-ENV HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1 \
-    SENTENCE_TRANSFORMERS_OFFLINE=1
+# Настройки оффлайн-режима: по умолчанию отключены, чтобы при пропуске прогрева
+# рантайм мог скачать модели при старте контейнера.
+ENV HF_HUB_OFFLINE=0 \
+    TRANSFORMERS_OFFLINE=0 \
+    SENTENCE_TRANSFORMERS_OFFLINE=0
 
 # Безопасность: нерутовый пользователь
 RUN useradd -m appuser && chown -R appuser:appuser /app
