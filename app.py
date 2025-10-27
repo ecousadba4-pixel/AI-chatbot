@@ -28,21 +28,21 @@ CORS(app)
 DEFAULT_COLLECTIONS = ["hotel_knowledge"]
 COLLECTIONS = DEFAULT_COLLECTIONS.copy()
 ERROR_MESSAGE = "Извините, не удалось получить ответ. Пожалуйста, попробуйте позже."
-QDRANT_HOST = os.getenv("QDRANT_HOST", "amvera-karinausadba-run-u4s-ai-chatbot")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+QDRANT_HOST = os.getenv("QDRANT_HOST")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT"))
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_HTTPS = os.getenv("QDRANT_HTTPS", "false").lower() in ("1", "true", "yes")
 
 AMVERA_GPT_URL = os.getenv(
     "AMVERA_GPT_URL", "https://kong-proxy.yc.amvera.ru/api/v1/models/gpt"
 )
-AMVERA_GPT_MODEL = os.getenv("AMVERA_GPT_MODEL", "gpt-5").strip() or "gpt-5"
+AMVERA_GPT_MODEL = os.getenv("AMVERA_GPT_MODEL")
 AMVERA_GPT_TOKEN = os.getenv("AMVERA_GPT_TOKEN")
 AMVERA_AUTH_HEADER = "X-Auth-Token"
 AMVERA_AUTH_PREFIX = "Bearer"
 
 REDIS_HOST = os.getenv("REDIS_HOST")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PORT = int(os.getenv("REDIS_PORT"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 def _filter_existing_collections(
