@@ -21,4 +21,8 @@ def resolve_embedding_model(*, model_name: str, allow_download: bool = True) -> 
 
     model = SentenceTransformer(model_name, **load_kwargs)
     setattr(model, "_resolved_from", model_name)
+
+    print(
+        f"✅ Модель эмбеддингов из Hugging Face '{model_name}' загружена и готова к работе"
+    )
     return model

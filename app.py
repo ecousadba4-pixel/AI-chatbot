@@ -200,7 +200,12 @@ def chat() -> Any:
         deps.redis.delete(f"booking_session:{session_id}")
         return _json_reply(session_id, "Диалог сброшен. Чем могу помочь?")
 
-    booking_result = handle_price_dialog(session_id, question, deps.redis)
+    booking_result = handle_price_dialog(
+        session_id,
+        question,
+        deps.redis,
+        deps.morph,
+    )
     if booking_result:
         return _json_reply(
             session_id,
