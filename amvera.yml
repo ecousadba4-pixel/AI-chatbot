@@ -35,6 +35,7 @@ run:
     QDRANT_PORT: "6333"
     QDRANT_HTTPS: "false"
     QDRANT_API_KEY: "${QDRANT_API_KEY}"   # если не нужен — оставь пустым в панели
+    QDRANT_COLLECTION: "hotel_knowledge"
 
     # --- Redis (внутренний сервис Amvera, пароль не требуется) ---
     REDIS_HOST: "amvera-karinausadba-run-hotelbot-redis"

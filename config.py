@@ -1,7 +1,7 @@
 """Загрузка и валидация настроек приложения."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 
@@ -37,6 +37,26 @@ def _parse_bool(value: str | None, *, default: bool | None = None) -> bool:
     return value.strip().lower() in {"1", "true", "yes"}
 
 
+def _parse_collections(value: str | None, *, name: str = "QDRANT_COLLECTION") -> tuple[str, ...]:
+    if not value:
+        raise RuntimeError(
+            f"Переменная окружения {name} должна быть установлена для запуска приложения."
+        )
+
+    collections = tuple(
+        collection
+        for collection in (item.strip() for item in value.split(","))
+        if collection
+    )
+
+    if not collections:
+        raise RuntimeError(
+            f"Переменная окружения {name} должна содержать хотя бы одно имя коллекции."
+        )
+
+    return collections
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Иммутабельная модель настроек приложения."""
@@ -58,7 +78,7 @@ class Settings:
     amvera_auth_header: str
     amvera_auth_prefix: str
 
-    default_collections: tuple[str, ...] = ("hotel_knowledge",)
+    default_collections: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -92,6 +112,8 @@ class Settings:
                 "Переменная окружения AMVERA_GPT_URL должна быть установлена для запуска приложения."
             )
 
+        default_collections = _parse_collections(_get_env("QDRANT_COLLECTION"))
+
         return cls(
             qdrant_host=qdrant_host,
             qdrant_port=qdrant_port,
@@ -106,6 +128,7 @@ class Settings:
             amvera_token=os.getenv("AMVERA_GPT_TOKEN") or None,
             amvera_auth_header=os.getenv("AMVERA_AUTH_HEADER", "X-Auth-Token"),
             amvera_auth_prefix=os.getenv("AMVERA_AUTH_PREFIX", "Bearer"),
+            default_collections=default_collections,
         )
 
 
