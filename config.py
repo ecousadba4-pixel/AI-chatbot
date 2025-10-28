@@ -79,6 +79,7 @@ class Settings:
     amvera_auth_header: str
     amvera_auth_prefix: str
 
+    local_knowledge_base_path: str
     default_collections: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
@@ -120,6 +121,7 @@ class Settings:
             )
 
         default_collections = _parse_collections(_get_env("QDRANT_COLLECTION"))
+        local_kb_path = os.getenv("LOCAL_KNOWLEDGE_BASE_PATH") or "Qdrant JSON"
 
         return cls(
             qdrant_host=qdrant_host,
@@ -135,6 +137,7 @@ class Settings:
             amvera_token=os.getenv("AMVERA_GPT_TOKEN") or None,
             amvera_auth_header=os.getenv("AMVERA_AUTH_HEADER", "X-Auth-Token"),
             amvera_auth_prefix=os.getenv("AMVERA_AUTH_PREFIX", "Bearer"),
+            local_knowledge_base_path=local_kb_path,
             default_collections=default_collections,
         )
 
