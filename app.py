@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 import requests
@@ -127,73 +127,168 @@ def _build_context(results: list[SearchResult]) -> str:
     return "\n\n".join(result.text for result in results)
 
 
-def _perform_semantic_search(
-    container: AppContainer, normalized: str, *, limit: int
-) -> tuple[list[SearchResult], list[float], str]:
-    deps = container.dependencies
-    if deps.local_index is not None:
-        results, query_vector = deps.local_index.search(normalized, limit=limit)
-        return results, query_vector, "local"
+@dataclass(slots=True)
+class ChatResponse:
+    """Результат обработки пользовательского запроса."""
 
-    query_embedding = encode(normalized, deps.embedding_model)
-    results = search_all_collections(
-        deps.qdrant,
-        container.collections,
-        query_embedding,
-        limit=limit,
-    )
-    return results, query_embedding, "qdrant"
+    message: str
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
-def _generate_response(container: AppContainer, context: str, question: str) -> str:
-    deps = container.dependencies
-    settings = container.settings
+@dataclass(slots=True)
+class ChatResponder:
+    """Инкапсулирует бизнес-логику обработки сообщений."""
 
-    redis_key = cache_key(context, question)
+    container: AppContainer
 
-    cached = deps.redis.get(redis_key)
-    if cached:
-        LOGGER.info("Ответ для вопроса %s получен из кэша Redis", question)
-        return cached
+    def handle(self, session_id: str, question: str) -> ChatResponse:
+        LOGGER.info("Вопрос [%s]: %s", session_id[:8], question)
 
-    try:
-        token = ensure_token(settings)
-    except AmveraError as exc:
-        LOGGER.warning("%s", exc)
-        return ERROR_MESSAGE
+        lower_question = question.lower()
+        if lower_question in CANCEL_COMMANDS:
+            self._clear_booking_session(session_id)
+            return ChatResponse("Диалог сброшен. Чем могу помочь?")
 
-    payload = build_payload(settings.amvera_model, context, question)
+        booking_result = handle_price_dialog(
+            session_id,
+            question,
+            self.container.dependencies.redis,
+            self.container.dependencies.morph,
+        )
+        if booking_result:
+            extra = {k: v for k, v in booking_result.items() if k != "answer"}
+            return ChatResponse(booking_result["answer"], extra)
 
-    try:
-        response = perform_request(settings, token, payload, timeout=60)
-    except requests.RequestException as exc:
-        LOGGER.warning("Не удалось выполнить запрос к Amvera API: %s", exc)
-        return ERROR_MESSAGE
+        normalized = self.normalize(question)
+        LOGGER.debug("Нормализованный запрос: %s", normalized)
 
-    if not response.ok:
-        log_error(response)
-        return ERROR_MESSAGE
+        search_results, query_embedding, backend = self.perform_semantic_search(
+            normalized,
+            limit=5,
+        )
 
-    try:
-        data = response.json()
-    except ValueError:
-        LOGGER.warning("Не удалось распарсить ответ Amvera как JSON")
-        return ERROR_MESSAGE
+        LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
+        if backend == "qdrant":
+            LOGGER.info(
+                "Поиск в Qdrant по коллекциям: %s",
+                ", ".join(self.container.collections),
+            )
+        else:
+            local_index = self.container.dependencies.local_index
+            document_count = local_index.document_count if local_index else 0
+            LOGGER.info(
+                "Поиск в локальном индексе (%s документов)",
+                document_count,
+            )
 
-    try:
-        answer = extract_answer(data)
-    except AmveraError as exc:
-        LOGGER.warning("%s", exc)
-        return ERROR_MESSAGE
+        if not search_results:
+            LOGGER.info("Ничего не найдено ни в одной коллекции")
+            return ChatResponse(
+                "Извините, не нашёл информации по вашему вопросу. "
+                "Попробуйте переформулировать или свяжитесь с администратором.",
+            )
 
-    try:
-        deps.redis.setex(redis_key, 3600, answer)
-    except Exception as exc:  # pragma: no cover - сбой Redis не критичен
-        LOGGER.warning("Не удалось сохранить ответ в Redis: %s", exc)
-    else:
-        LOGGER.debug("Ответ сохранён в кэш Redis под ключом %s", redis_key)
+        LOGGER.debug("Топ-результаты: %s", search_results[:3])
 
-    return answer
+        context = _build_context(search_results[:3])
+        if not context.strip():
+            LOGGER.warning("Контекст пуст после извлечения payload['text']")
+            return ChatResponse(
+                "Извините, не удалось сформировать ответ. "
+                "Попробуйте переформулировать вопрос.",
+            )
+
+        LOGGER.debug("Итоговый контекст длиной %s символов", len(context))
+
+        answer = self._generate_response(context, question)
+        LOGGER.info("Ответ сгенерирован: %s", answer[:100].replace("\n", " "))
+
+        debug_info = {
+            "top_collection": search_results[0].collection,
+            "top_score": search_results[0].score,
+            "results_count": len(search_results),
+            "embedding_dim": len(query_embedding),
+            "search_backend": backend,
+        }
+        return ChatResponse(answer, {"debug_info": debug_info})
+
+    def normalize(self, text: str) -> str:
+        return normalize_text(text, self.container.dependencies.morph)
+
+    def perform_semantic_search(
+        self, normalized: str, *, limit: int
+    ) -> tuple[list[SearchResult], list[float], str]:
+        deps = self.container.dependencies
+        if deps.local_index is not None:
+            results, query_vector = deps.local_index.search(normalized, limit=limit)
+            return results, query_vector, "local"
+
+        query_embedding = encode(normalized, deps.embedding_model)
+        results = search_all_collections(
+            deps.qdrant,
+            self.container.collections,
+            query_embedding,
+            limit=limit,
+        )
+        return results, query_embedding, "qdrant"
+
+    def _generate_response(self, context: str, question: str) -> str:
+        deps = self.container.dependencies
+        settings = self.container.settings
+
+        redis_key = cache_key(context, question)
+
+        cached = deps.redis.get(redis_key)
+        if cached:
+            LOGGER.info("Ответ для вопроса %s получен из кэша Redis", question)
+            return cached
+
+        try:
+            token = ensure_token(settings)
+        except AmveraError as exc:
+            LOGGER.warning("%s", exc)
+            return ERROR_MESSAGE
+
+        payload = build_payload(settings.amvera_model, context, question)
+
+        try:
+            response = perform_request(settings, token, payload, timeout=60)
+        except requests.RequestException as exc:
+            LOGGER.warning("Не удалось выполнить запрос к Amvera API: %s", exc)
+            return ERROR_MESSAGE
+
+        if not response.ok:
+            log_error(response)
+            return ERROR_MESSAGE
+
+        try:
+            data = response.json()
+        except ValueError:
+            LOGGER.warning("Не удалось распарсить ответ Amvera как JSON")
+            return ERROR_MESSAGE
+
+        try:
+            answer = extract_answer(data)
+        except AmveraError as exc:
+            LOGGER.warning("%s", exc)
+            return ERROR_MESSAGE
+
+        try:
+            deps.redis.setex(redis_key, 3600, answer)
+        except Exception as exc:  # pragma: no cover - сбой Redis не критичен
+            LOGGER.warning("Не удалось сохранить ответ в Redis: %s", exc)
+        else:
+            LOGGER.debug("Ответ сохранён в кэш Redis под ключом %s", redis_key)
+
+        return answer
+
+    def _clear_booking_session(self, session_id: str) -> None:
+        try:
+            self.container.dependencies.redis.delete(
+                f"booking_session:{session_id}"
+            )
+        except Exception as exc:  # pragma: no cover - сбой Redis не критичен
+            LOGGER.warning("Не удалось очистить сессию бронирования: %s", exc)
 
 
 def _get_container() -> AppContainer:
@@ -285,8 +380,6 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/chat", methods=["POST"])
     def chat() -> Any:  # noqa: D401 - функция возвращает JSON-ответ
         container = _get_container()
-        deps = container.dependencies
-
         data = request.get_json(silent=True) or {}
         question = data.get("message", "").strip()
         session_id = data.get("session_id") or os.urandom(16).hex()
@@ -294,85 +387,9 @@ def register_routes(app: Flask) -> None:
         if not question:
             return _json_reply(session_id, "Пожалуйста, введите вопрос.")
 
-        LOGGER.info("Вопрос [%s]: %s", session_id[:8], question)
-
-        if question.lower() in CANCEL_COMMANDS:
-            deps.redis.delete(f"booking_session:{session_id}")
-            return _json_reply(session_id, "Диалог сброшен. Чем могу помочь?")
-
-        booking_result = handle_price_dialog(
-            session_id,
-            question,
-            deps.redis,
-            deps.morph,
-        )
-        if booking_result:
-            return _json_reply(
-                session_id,
-                booking_result["answer"],
-                mode=booking_result.get("mode", "booking"),
-            )
-
-        normalized = normalize_text(question, deps.morph)
-        LOGGER.debug("Нормализованный запрос: %s", normalized)
-
-        search_results, query_embedding, search_backend = _perform_semantic_search(
-            container,
-            normalized,
-            limit=5,
-        )
-
-        LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
-        if search_backend == "qdrant":
-            LOGGER.info(
-                "Поиск в Qdrant по коллекциям: %s",
-                ", ".join(container.collections),
-            )
-        else:
-            local_index = deps.local_index
-            document_count = local_index.document_count if local_index else 0
-            LOGGER.info(
-                "Поиск в локальном индексе (%s документов)",
-                document_count,
-            )
-
-        if not search_results:
-            LOGGER.info("Ничего не найдено ни в одной коллекции")
-            return _json_reply(
-                session_id,
-                "Извините, не нашёл информации по вашему вопросу. "
-                "Попробуйте переформулировать или свяжитесь с администратором.",
-            )
-
-        LOGGER.debug("Топ-результаты: %s", search_results[:3])
-
-        context = _build_context(search_results[:3])
-        if not context.strip():
-            LOGGER.warning("Контекст пуст после извлечения payload['text']")
-            return _json_reply(
-                session_id,
-                "Извините, не удалось сформировать ответ. "
-                "Попробуйте переформулировать вопрос.",
-            )
-
-        LOGGER.debug(
-            "Итоговый контекст длиной %s символов", len(context)
-        )
-
-        answer = _generate_response(container, context, question)
-        LOGGER.info("Ответ сгенерирован: %s", answer[:100].replace("\n", " "))
-
-        return _json_reply(
-            session_id,
-            answer,
-            debug_info={
-                "top_collection": search_results[0].collection,
-                "top_score": search_results[0].score,
-                "results_count": len(search_results),
-                "embedding_dim": len(query_embedding),
-                "search_backend": search_backend,
-            },
-        )
+        responder = ChatResponder(container)
+        response = responder.handle(session_id, question)
+        return _json_reply(session_id, response.message, **response.extra)
 
     @app.route("/api/debug/qdrant", methods=["GET"])
     def debug_qdrant() -> Any:
@@ -409,7 +426,7 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/debug/search", methods=["POST"])
     def debug_search() -> Any:
         container = _get_container()
-        deps = container.dependencies
+        responder = ChatResponder(container)
 
         data = request.get_json(silent=True) or {}
         question = data.get("message", "").strip()
@@ -417,9 +434,8 @@ def register_routes(app: Flask) -> None:
         if not question:
             return jsonify({"error": "message required"}), 400
 
-        normalized = normalize_text(question, deps.morph)
-        results, vector, backend = _perform_semantic_search(
-            container,
+        normalized = responder.normalize(question)
+        results, vector, backend = responder.perform_semantic_search(
             normalized,
             limit=10,
         )
