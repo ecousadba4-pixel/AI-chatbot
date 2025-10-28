@@ -28,7 +28,15 @@ from docx import Document
 # контейнере Amvera или в CI. По умолчанию используем директорию рядом со
 # скриптом.
 BASE_DIR = Path(os.getenv("HOTEL_DOCS_BASE_DIR", Path(__file__).resolve().parent))
-DOCX_DIR = Path(os.getenv("HOTEL_DOCS_SOURCE_DIR", BASE_DIR / "hotel_docs"))
+
+_default_docx_dir = BASE_DIR / "hotel_docs"
+if not _default_docx_dir.exists():
+    repo_root = BASE_DIR.parent
+    fallback = repo_root / "docx"
+    if fallback.exists():
+        _default_docx_dir = fallback
+
+DOCX_DIR = Path(os.getenv("HOTEL_DOCS_SOURCE_DIR", _default_docx_dir))
 OUT_DIR = Path(os.getenv("HOTEL_DOCS_OUTPUT_DIR", BASE_DIR / "processed"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -53,18 +61,24 @@ def fix_typos(text: str) -> str:
     text = re.sub(r"\bW[iі][-\s_]*F[iі]\b", "Wi-Fi", text, flags=re.I)
     text = re.sub(r"\bWI[\s_-]*FII\b", "Wi-Fi", text, flags=re.I)
     text = re.sub(r"\bWi-?F\b", "Wi-Fi", text, flags=re.I)
+    text = re.sub(r"\bW-?Fi\b", "Wi-Fi", text, flags=re.I)
 
     # Частотные опечатки, появлявшиеся после парсинга
     typo_map = {
         "каализа": "канализа",
         "плотенц": "полотенц",
+        "услв": "услов",
+        "дополнитль": "дополнитель",
+        "Это Оптим": "Это оптим",
     }
     for wrong, right in typo_map.items():
         text = re.sub(wrong, right, text, flags=re.I)
 
     # Пробелы/переводы строк
     text = re.sub(r"[ \t]+", " ", text)
+    text = text.replace(". :", ". ")
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"\s+[:]\s+", ": ", text)
     return text
 
 def normalize_units(text: str) -> str:
@@ -72,22 +86,31 @@ def normalize_units(text: str) -> str:
     text = re.sub(r"(\d+)\s*Га\b", r"\1 га", text)
     return text
 
-def docx_to_text(path: Path) -> str:
+def load_docx_content(path: Path) -> Tuple[List[str], List[str]]:
     if not path.exists():
         raise FileNotFoundError(f"Не найден файл: {path}")
     doc = Document(str(path))
-    parts = []
+    paragraphs: List[str] = []
+    parts: List[str] = []
     for p in doc.paragraphs:
         t = (p.text or "").strip()
         if t:
-            parts.append(t)
+            cleaned = normalize_units(fix_typos(t))
+            paragraphs.append(cleaned)
+            parts.append(cleaned)
     for tbl in getattr(doc, "tables", []):
         for row in tbl.rows:
             for cell in row.cells:
                 t = (cell.text or "").strip()
                 if t:
-                    parts.append(t)
-    return normalize_units(fix_typos("\n".join(parts)))
+                    cleaned = normalize_units(fix_typos(t))
+                    parts.append(cleaned)
+    return paragraphs, parts
+
+
+def docx_to_text(path: Path) -> str:
+    paragraphs, parts = load_docx_content(path)
+    return "\n".join(parts)
 
 def gen_keywords(text: str, extra: List[str] = None) -> List[str]:
     kws = set(extra or [])
@@ -104,21 +127,36 @@ def gen_keywords(text: str, extra: List[str] = None) -> List[str]:
         kws.add(m)
     return sorted(kws)
 
+TRANSLIT_MAP = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "zh", "з": "z", "и": "i",
+    "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+    "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+    "э": "e", "ю": "yu", "я": "ya",
+}
+
+
 def normalize_room_name(name: str) -> str:
     if not name:
         return ""
     s = name.lower()
-    repl = {"шале комфорт": "шале_комфорт", "вип": "vip"}
-    for a, b in repl.items():
-        s = s.replace(a, b)
-    s = (s
-         .replace("ё", "е")
-         .replace("й", "и")
-         .replace("ь", "")
-         .replace("ъ", "")
-         .replace(" ", "_"))
-    s = re.sub(r"[^a-z0-9_а-я]", "", s)
-    return s
+    repl = {"вип": "vip"}
+    for src, replacement in repl.items():
+        s = s.replace(src, replacement)
+
+    slug_chars: List[str] = []
+    for ch in s:
+        if ch.isalnum() and ch.isascii():
+            slug_chars.append(ch)
+            continue
+        if ch in {" ", "-"}:
+            slug_chars.append("_")
+            continue
+        slug_chars.append(TRANSLIT_MAP.get(ch, ""))
+
+    slug = re.sub(r"_+", "_", "".join(slug_chars)).strip("_")
+    if not slug:
+        slug = stable_hash(name)
+    return slug
 
 
 def stable_hash(value: str, length: int = 12) -> str:
@@ -262,7 +300,7 @@ def extract_opening_hours(text: str) -> Optional[str]:
             return val
 
     # «с 9:00 до 21:00»
-    m = re.search(r"с\s*(\d{1,2})(?::|\.|h)?(\d{0,2})?\s*до\s*(\d{1,2})(?::|\.|h)?(\d{0,2})?", text, flags=re.I)
+    m = re.search(r"с\s*(\d{1,2})(?::|\.|h)?(\d{0,2})?\s*(?:час[аов]*|утра|вечера|дня)?\s*до\s*(\d{1,2})(?::|\.|h)?(\d{0,2})?\s*(?:час[аов]*|утра|вечера|ночи)?", text, flags=re.I)
     if m:
         val = _norm_pair(m.group(1), m.group(2) or "00", m.group(3), m.group(4) or "00")
         if val:
@@ -290,11 +328,11 @@ def build_rooms(text: str) -> List[Dict]:
     entries = []
     parts = re.split(r"\n(?=Номер категории\s+)", text)
     patterns = {
-        "Возможные варианты размещения": r"^Возможные варианты размещения\s*:\s*(.*)$",
+        "Возможные варианты размещения": r"^Возможные варианты размещения\s*[:\-]\s*(.*)$",
         "Тип строения": r"^Тип строения\s*[:\-]\s*(.*)$",
-        "Характеристики помещения": r"^Характеристики помещения\s*:\s*(.*)$",
-        "Спальные места": r"^Спальные места(?:\s*в\s*номере)?\s*:\s*(.*)$",
-        "Оснащение": r"^(?:В номер есть|В номере есть)\s*:\s*(.*)$",
+        "Характеристики помещения": r"^Характеристики помещения\s*[:\-]\s*(.*)$",
+        "Спальные места": r"^Спальные места(?:\s*в\s*номер[е]?)?\s*[:\-]\s*(.*)$",
+        "Оснащение": r"^(?:В номер есть|В номере есть)\s*[:\-]\s*(.*)$",
         "Дополнительно": r"^Для гостей номера доступны?а?\s*(.*)$",
     }
 
@@ -351,6 +389,7 @@ def build_rooms(text: str) -> List[Dict]:
             text_blocks["Оснащение"] = re.sub(r"^[\s,:;]+", "", text_blocks["Оснащение"]).strip()
         if "Спальные места" in text_blocks:
             text_blocks["Спальные места"] = re.sub(r"[\s,;]+$", "", text_blocks["Спальные места"]).strip()
+            text_blocks["Спальные места"] = re.sub(r"\s{2,}", " ", text_blocks["Спальные места"]).strip()
 
         # Числа/флаги
         capacity_max = extract_capacity_max(text_blocks)
@@ -508,6 +547,7 @@ def build_contacts(text: str) -> List[Dict]:
             has_wa = bool(re.search(r"whatsapp|ватсап", sentence, flags=re.I))
         phones_norm = list(filter(None, [normalize_phone_e164(raw)]))
         base_text = sentence or ctx_clean or f"{title}: {raw}"
+        base_text = re.sub(r"^Наши контакты\s*", "", base_text, flags=re.I).strip()
         if hours and hours not in base_text:
             suffix = "" if base_text.endswith(".") else "."
             base_text = f"{base_text}{suffix} Часы: {hours}"
@@ -695,8 +735,20 @@ def classify_hotel_paragraph(text: str, heading: Optional[str]) -> List[str]:
     return keys
 
 
-def build_hotel(text: str) -> List[Dict]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+def build_hotel(text: str, paragraphs: Optional[List[str]] = None) -> List[Dict]:
+    if paragraphs:
+        raw_lines = [line.strip() for line in paragraphs if line.strip()]
+    else:
+        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    lines: List[str] = []
+    for line in raw_lines:
+        if not lines and re.fullmatch(r"Описание отеля", line, flags=re.I):
+            continue
+        cleaned = re.sub(r"очень самая", "очень высокая", line, flags=re.I)
+        cleaned = re.sub(r"\bвысокая высокая\b", "высокая", cleaned, flags=re.I)
+        lines.append(cleaned)
+
     if not lines:
         return []
 
@@ -786,14 +838,35 @@ def build_hotel(text: str) -> List[Dict]:
 
     return results
 
-def build_loyalty(text: str) -> List[Dict]:
+def build_loyalty(text: str, paragraphs: Optional[List[str]] = None) -> List[Dict]:
+    if paragraphs:
+        raw_lines = [line.strip() for line in paragraphs if line.strip()]
+    else:
+        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    body_lines: List[str] = []
+    for line in raw_lines:
+        if not body_lines and re.search(r"программа лояльности", line, flags=re.I):
+            continue
+        body_lines.append(line)
+
+    intro_lines: List[str] = []
+    for line in body_lines:
+        if line.lower().startswith("уровень лояльности"):
+            break
+        intro_lines.append(line)
+
+    intro_text = re.sub(r"\s+", " ", " ".join(intro_lines)).strip()
+    if not intro_text:
+        intro_text = "Каждый гость становится участником программы лояльности. Для всех участников — бесплатные 2 часа раннего заезда (при наличии возможности)."
+
     entries = [{
         "id": "loyalty:overview",
         "category": "loyalty",
         "subcategory": "Общие условия",
         "title": "Участие и базовые условия",
-        "text": "Каждый гость становится участником программы лояльности. Для всех участников — бесплатные 2 часа раннего заезда (при наличии возможности).",
-        "keywords": ["программа лояльности", "ранний заезд"],
+        "text": intro_text,
+        "keywords": ["программа лояльности", "ранний заезд", "привилегии"],
         "source": "Программа лояльности"
     }]
 
@@ -813,7 +886,7 @@ def build_loyalty(text: str) -> List[Dict]:
                 "subcategory": f"{lvl} СЕЗОН(А)" if lvl > 1 else "1 СЕЗОН",
                 "title": f"Уровень лояльности {lvl} СЕЗОНА" if lvl > 1 else "Уровень лояльности 1 СЕЗОН",
                 "text": txt,
-                "keywords": ["бонусы", "привилегии", f"{lvl} сезон"],
+                "keywords": ["бонусы", "привилегии", f"{lvl} сезон", "статус"],
                 "source": "Программа лояльности"
             })
 
@@ -890,35 +963,85 @@ def tags_from_text(t: str) -> List[str]:
     if "террас" in tlow: tags.append("терраса")
     return tags
 
-def build_faq(text: str) -> List[Dict]:
-    entries = []
-    qa_raw = re.findall(r"Вопрос:\s*(.+?)\s*Ответ:\s*(.+?)(?=Вопрос:|\Z)", text, flags=re.S)
-    for q_raw, a in qa_raw:
-        sub_qs = re.split(r"\s*Вопрос:\s*", q_raw)
-        sub_qs = [q.strip(" .") for q in sub_qs if q.strip()]
-        qs = sub_qs if len(sub_qs) > 1 else [q_raw.strip(" .")]
+def build_faq(text: str, paragraphs: Optional[List[str]] = None) -> List[Dict]:
+    body_lines: List[str] = []
+    if paragraphs:
+        for line in paragraphs:
+            if not line.strip():
+                continue
+            if not body_lines and re.search(r"частые вопросы", line, flags=re.I):
+                continue
+            body_lines.append(line)
+    else:
+        for line in re.split(r"\n+", text):
+            line = line.strip()
+            if not line:
+                continue
+            if not body_lines and re.search(r"частые вопросы", line, flags=re.I):
+                continue
+            body_lines.append(line)
 
-        a_clean = fix_typos(re.sub(r"\s+", " ", a).strip(" ."))
-        a_topic = faq_topic(a_clean)
+    source_text = "\n".join(body_lines)
+    tokens = list(re.finditer(r"(Вопрос|Ответ):", source_text))
+    entries: List[Dict] = []
+    current_question: Optional[str] = None
+    answer_parts: List[str] = []
 
-        for q in qs:
-            q_clean = fix_typos(re.sub(r"\s+", " ", q).strip(" ."))
-            q_topic = faq_topic(q_clean)
-            if q_topic and (a_topic is None or q_topic not in a_clean.lower()):
-                continue  # жесткий конфликт — пропускаем
+    def clean_chunk(chunk: str) -> str:
+        chunk = re.sub(r"\s+", " ", chunk).strip(" .")
+        return fix_typos(chunk)
 
-            # Авто-теги из ВОПРОСА и ИЗ ОТВЕТА
-            tags = tags_from_text(q_clean) + tags_from_text(a_clean)
+    def finalize():
+        nonlocal current_question, answer_parts
+        if not current_question:
+            return
+        answer_text = " ".join(p for p in answer_parts if p).strip()
+        if not answer_text:
+            current_question = None
+            answer_parts = []
+            return
+        q_clean = clean_chunk(current_question)
+        a_clean = clean_chunk(answer_text)
+        tags = sorted(set(tags_from_text(q_clean) + tags_from_text(a_clean)))
+        entries.append({
+            "id": f"faq:{stable_hash(q_clean + '|' + a_clean)}",
+            "category": "faq",
+            "question": q_clean,
+            "answer": a_clean,
+            "tags": tags,
+            "keywords": gen_keywords(f"{q_clean} {a_clean}"),
+            "source": "Частые вопросы"
+        })
+        current_question = None
+        answer_parts = []
 
-            entries.append({
-                "id": f"faq:{stable_hash(q_clean + '|' + a_clean)}",
-                "category": "faq",
-                "question": q_clean,
-                "answer": a_clean,
-                "tags": sorted(set(tags)),
-                "keywords": gen_keywords(q_clean + " " + a_clean),
-                "source": "Частые вопросы"
-            })
+    if not tokens:
+        return entries
+
+    for idx, token in enumerate(tokens):
+        kind = token.group(1)
+        start = token.end()
+        end = tokens[idx + 1].start() if idx + 1 < len(tokens) else len(source_text)
+        chunk = source_text[start:end]
+        chunk_clean = clean_chunk(chunk)
+        if not chunk_clean:
+            continue
+        if kind == "Вопрос":
+            if current_question and not answer_parts:
+                looks_like_answer = ("?" not in chunk_clean) or chunk_clean.lower().startswith(("при", "просим", "стоимость", "у", "на", "ранний", "возможно", "планируем", "территория", "доступ"))
+                if looks_like_answer:
+                    answer_parts.append(chunk_clean)
+                    continue
+            if current_question:
+                finalize()
+            current_question = chunk_clean
+            answer_parts = []
+        else:  # Ответ
+            if not current_question:
+                continue
+            answer_parts.append(chunk_clean)
+
+    finalize()
     return entries
 
 # ── Сохранение ───────────────────────────────────────────────────────────────
@@ -930,14 +1053,16 @@ def save_json(name: str, data: List[Dict]):
 
 # ── Главный сценарий ─────────────────────────────────────────────────────────
 def main():
-    texts = {k: docx_to_text(p) for k, p in FILES.items()}
+    contents = {k: load_docx_content(p) for k, p in FILES.items()}
+    paragraphs = {k: v[0] for k, v in contents.items()}
+    texts = {k: "\n".join(v[1]) for k, v in contents.items()}
 
     save_json("structured_rooms.json",    build_rooms(texts["rooms"]))
     save_json("structured_concept.json",  build_concept(texts["concept"]))
     save_json("structured_contacts.json", build_contacts(texts["contacts"]))
-    save_json("structured_hotel.json",    build_hotel(texts["hotel"]))
-    save_json("structured_loyalty.json",  build_loyalty(texts["loyalty"]))
-    save_json("structured_faq.json",      build_faq(texts["faq"]))
+    save_json("structured_hotel.json",    build_hotel(texts["hotel"], paragraphs.get("hotel")))
+    save_json("structured_loyalty.json",  build_loyalty(texts["loyalty"], paragraphs.get("loyalty")))
+    save_json("structured_faq.json",      build_faq(texts["faq"], paragraphs.get("faq")))
 
 if __name__ == "__main__":
     main()
