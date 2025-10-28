@@ -941,6 +941,18 @@ def faq_topic(s: str):
             return k
     return None
 
+FAQ_STOPWORDS = {
+    "это", "что", "или", "если", "которые", "какие", "какая", "какой", "каков", "такие",
+    "такой", "такая", "чтобы", "когда", "сколько", "после", "перед", "где", "про", "буду",
+    "будем", "будет", "будете", "будут", "можно", "может", "можете", "можем", "могу",
+    "нужно", "нужен", "нужна", "нужны", "вас", "вам", "вами", "ваш", "ваша", "ваше",
+    "ваши", "вашего", "вашей", "вашем", "ваших", "вашу", "свой", "свою", "свои", "своих",
+    "своего", "своей", "гости", "гостей", "номер", "номера", "номеров", "есть", "также",
+    "только", "весь", "всей", "всего", "все", "каким", "через", "доступен", "доступно",
+    "доступны", "вопрос", "ответ"
+}
+
+
 def tags_from_text(t: str) -> List[str]:
     tlow = t.lower()
     tags = []
@@ -954,7 +966,7 @@ def tags_from_text(t: str) -> List[str]:
     if "заезд" in tlow or "выезд" in tlow: tags.append("заезд/выезд")
     if "территори" in tlow or "планировк" in tlow: tags.append("территория")
     if "заряд" in tlow or "электроавтомоб" in tlow: tags.append("электромобиль")
-    if "экскурс" in tlow or "гостев" in tlow: tags += ["посещения","территория"]
+    if "экскурс" in tlow or "гостев" in tlow: tags += ["посещения", "территория"]
     if "вода" in tlow or "коммуникац" in tlow: tags.append("коммуникации")
     if "тишин" in tlow: tags.append("тишина")
     if "парковк" in tlow: tags.append("парковка")
@@ -962,6 +974,43 @@ def tags_from_text(t: str) -> List[str]:
     if "камин" in tlow: tags.append("камин")
     if "террас" in tlow: tags.append("терраса")
     return tags
+
+
+def normalize_tags(raw_tags: List[str]) -> List[str]:
+    normalized = set()
+    for tag in raw_tags:
+        for piece in re.split(r"[\s,]*[/][\s,]*", tag):
+            piece = piece.strip()
+            if not piece:
+                continue
+            normalized.add(piece)
+    return sorted(normalized)
+
+
+def extract_significant_words(text: str) -> List[str]:
+    words = re.findall(r"[A-Za-zА-Яа-яёЁ0-9-]+", text.lower())
+    result = []
+    for word in words:
+        if len(word) < 4:
+            continue
+        if word.isdigit():
+            continue
+        if word in FAQ_STOPWORDS:
+            continue
+        result.append(word)
+    return result
+
+
+def build_faq_keywords(question: str, answer: str, tags: List[str]) -> List[str]:
+    base_keywords = gen_keywords(f"{question} {answer}")
+    if base_keywords:
+        return base_keywords
+
+    fallback = set(tags)
+    fallback.update(extract_significant_words(question))
+    if not fallback:
+        fallback.update(extract_significant_words(answer))
+    return sorted(fallback)
 
 def build_faq(text: str, paragraphs: Optional[List[str]] = None) -> List[Dict]:
     body_lines: List[str] = []
@@ -1002,14 +1051,15 @@ def build_faq(text: str, paragraphs: Optional[List[str]] = None) -> List[Dict]:
             return
         q_clean = clean_chunk(current_question)
         a_clean = clean_chunk(answer_text)
-        tags = sorted(set(tags_from_text(q_clean) + tags_from_text(a_clean)))
+        raw_tags = tags_from_text(q_clean) + tags_from_text(a_clean)
+        tags = normalize_tags(raw_tags)
         entries.append({
             "id": f"faq:{stable_hash(q_clean + '|' + a_clean)}",
             "category": "faq",
             "question": q_clean,
             "answer": a_clean,
             "tags": tags,
-            "keywords": gen_keywords(f"{q_clean} {a_clean}"),
+            "keywords": build_faq_keywords(q_clean, a_clean, tags),
             "source": "Частые вопросы"
         })
         current_question = None
