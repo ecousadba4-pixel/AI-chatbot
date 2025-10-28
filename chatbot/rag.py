@@ -1,4 +1,4 @@
-"""Инструменты поиска релевантных ответов в Qdrant."""
+"""Инструменты для семантического поиска."""
 from __future__ import annotations
 
 import logging
@@ -11,17 +11,15 @@ import numpy as np
 from qdrant_client import QdrantClient
 
 
-_LEMMA_CACHE_ATTR = "_chatbot_lemma_cache"
-_LEMMA_CACHE_MAX_SIZE = 50000
-
-
-LOGGER = logging.getLogger("chatbot.rag")
+_LOGGER = logging.getLogger("chatbot.rag")
 _WORD_PATTERN = re.compile(r"[а-яёa-z0-9]+")
+_LEMMA_CACHE_ATTR = "_chatbot_lemma_cache"
+_LEMMA_CACHE_MAX_SIZE = 50_000
 
 
 @dataclass(slots=True)
 class SearchResult:
-    """Найденный документ в Qdrant."""
+    """Найденный документ."""
 
     collection: str
     score: float
@@ -29,7 +27,7 @@ class SearchResult:
 
 
 def normalize_text(text: str, morph) -> str:
-    """Привести текст к леммам, устойчиво к сбоям морфологического анализа."""
+    """Привести текст к набору лемм."""
 
     cache = _ensure_lemma_cache(morph)
     lemmas: list[str] = []
@@ -59,7 +57,7 @@ def encode(text: str, model) -> list[float]:
 
 
 def extract_payload_text(payload: dict[str, Any]) -> str:
-    """Извлечь человекочитаемый текст из полезной нагрузки Qdrant."""
+    """Извлечь человекочитаемый текст из payload Qdrant."""
 
     text = payload.get("text") or payload.get("text_bm25")
     if text:
@@ -106,7 +104,7 @@ def search_all_collections(
                 limit=limit,
             )
         except Exception as exc:  # pragma: no cover - сетевые ошибки
-            LOGGER.warning("Ошибка поиска в %s: %s", collection, exc)
+            _LOGGER.warning("Ошибка поиска в %s: %s", collection, exc)
             continue
 
         for hit in search_response:

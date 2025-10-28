@@ -13,12 +13,5 @@ authors = [
 license = { text = "Proprietary" }
 
 [tool.setuptools]
-py-modules = [
-    "amvera",
-    "app",
-    "config",
-    "embedding_loader",
-    "price_dialog",
-    "rag",
-    "services"
-]
+packages = ["chatbot"]
+py-modules = ["app"]

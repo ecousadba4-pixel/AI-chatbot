@@ -1,5 +1,4 @@
-"""Диалог бронирования номеров и обращение к Shelter API."""
-
+"""Пошаговый диалог бронирования с обращением к Shelter API."""
 from __future__ import annotations
 
 import json
@@ -15,7 +14,8 @@ import pymorphy3
 import requests
 from dateutil.relativedelta import SA, relativedelta
 
-logger = logging.getLogger(__name__)
+
+LOGGER = logging.getLogger("chatbot.price_dialog")
 
 PRICE_KEYWORD_LEMMAS = {
     "цена",
@@ -60,7 +60,7 @@ def _load_session(redis_client: Any, key: str) -> dict[str, Any]:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Не удалось распарсить сохранённую сессию, создаём новую")
+        LOGGER.warning("Не удалось распарсить сохранённую сессию, создаём новую")
         redis_client.delete(key)
         return {}
 
@@ -198,17 +198,17 @@ def validate_dates(date_from: str, date_to: str) -> tuple[bool, str]:
         if checkin < today:
             return False, "Дата заезда не может быть в прошлом"
         if checkout <= checkin:
-            return False, "Дата выезда должна быть после даты заезда"
+            return False, "Дата выезда должна быть позже даты заезда"
 
-        stay = (checkout - checkin).days
-        if stay > MAX_STAY_DAYS:
-            return False, f"Максимальный срок проживания - {MAX_STAY_DAYS} дней"
-        if stay < MIN_STAY_DAYS:
+        nights = (checkout - checkin).days
+        if nights < MIN_STAY_DAYS:
             return False, f"Минимальный срок проживания - {MIN_STAY_DAYS} день"
+        if nights > MAX_STAY_DAYS:
+            return False, f"Максимальный срок проживания - {MAX_STAY_DAYS} ночей"
 
         return True, ""
     except ValueError as exc:
-        logger.error("Ошибка валидации дат: %s", exc)
+        LOGGER.error("Ошибка валидации дат: %s", exc)
         return False, "Неверный формат даты"
 
 
@@ -294,7 +294,7 @@ def get_room_price_from_shelter(
 
     token = _load_shelter_token()
     if not token:
-        logger.error("Не задан токен Shelter API (%s)", SHELTER_TOKEN_ENV)
+        LOGGER.error("Не задан токен Shelter API (%s)", SHELTER_TOKEN_ENV)
         return "Сервис бронирования временно недоступен. Пожалуйста, свяжитесь с администратором."
 
     payload = _build_shelter_payload(
@@ -316,26 +316,26 @@ def get_room_price_from_shelter(
         )
         response.raise_for_status()
     except requests.exceptions.Timeout:
-        logger.error("Shelter API timeout")
+        LOGGER.error("Shelter API timeout")
         return "Извините, сервис бронирования временно недоступен. Пожалуйста, попробуйте позже."
     except requests.exceptions.ConnectionError:
-        logger.error("Shelter API connection error")
+        LOGGER.error("Shelter API connection error")
         return "Извините, нет соединения с сервисом бронирования. Пожалуйста, проверьте интернет-соединение."
     except requests.RequestException as exc:
-        logger.error("Shelter API error: %s", exc)
+        LOGGER.error("Shelter API error: %s", exc)
         return "Извините, произошла ошибка при получении цен. Пожалуйста, попробуйте позже."
 
     try:
         data = response.json()
     except ValueError as exc:
-        logger.error("Некорректный JSON от Shelter API: %s", exc)
+        LOGGER.error("Некорректный JSON от Shelter API: %s", exc)
         return "Извините, произошла ошибка при обработке ответа сервиса бронирования."
 
     variants = data.get("variants") or []
     if not variants:
         return "К сожалению, на выбранные даты нет доступных номеров."
 
-    sorted_variants = []
+    sorted_variants: list[ShelterVariant] = []
     for variant in variants:
         price_raw = variant.get("priceRub", 0)
         try:
@@ -413,7 +413,9 @@ class BookingDialog:
         self.session.info["date_from"] = parsed_date.strftime(DATE_FORMAT)
 
         if default_nights:
-            self.session.info["date_to"] = (parsed_date + timedelta(days=default_nights)).strftime(DATE_FORMAT)
+            self.session.info["date_to"] = (
+                parsed_date + timedelta(days=default_nights)
+            ).strftime(DATE_FORMAT)
             self.session.step = DialogStep.ADULTS_COUNT
             date_from_formatted = format_date_russian(self.session.info["date_from"])
             return self._respond(
@@ -497,7 +499,7 @@ class BookingDialog:
         try:
             kids_ages = self._parse_children_ages()
         except ValueError as exc:
-            logger.error("Ошибка парсинга возрастов детей: %s", exc)
+            LOGGER.error("Ошибка парсинга возрастов детей: %s", exc)
             return self._respond(
                 "Пожалуйста, укажите возрасты детей числами через запятую "
                 "(например: 5, 9) или напишите 'нет'."
@@ -540,12 +542,12 @@ class BookingDialog:
             if step is DialogStep.CHILDREN_INFO:
                 return self._handle_children()
 
-            logger.warning("Неизвестный шаг диалога: %s", step)
+            LOGGER.warning("Неизвестный шаг диалога: %s", step)
             return self._finish(
                 "Извините, произошла ошибка при обработке запроса. Пожалуйста, начните заново."
             )
         except Exception:  # pragma: no cover - защита от непредвиденных сбоев
-            logger.exception("Ошибка в handle_price_dialog")
+            LOGGER.exception("Ошибка в handle_price_dialog")
             self.session.delete()
             return {
                 "answer": "Извините, произошла ошибка при обработке запроса. "
