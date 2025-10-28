@@ -1,4 +1,4 @@
-"""Локальный индекс для поиска по базе знаний без Qdrant."""
+"""Простой tf-idf индекс для локального поиска."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from rag import SearchResult, normalize_text
+from .rag import SearchResult, normalize_text
 
 
 LOGGER = logging.getLogger("chatbot.local_index")
@@ -23,7 +23,7 @@ class _IndexedDocument:
 
 
 class LocalIndex:
-    """Простой tf-idf индекс для локального поиска."""
+    """Tf-idf индекс, совместимый с интерфейсом SentenceTransformer."""
 
     def __init__(self, documents: Sequence[_IndexedDocument]):
         if not documents:
@@ -31,9 +31,7 @@ class LocalIndex:
 
         self._documents = list(documents)
         self._doc_count = len(self._documents)
-        self._collections = tuple(
-            sorted({doc.collection for doc in self._documents})
-        )
+        self._collections = tuple(sorted({doc.collection for doc in self._documents}))
 
         df_counter: Counter[str] = Counter()
         for doc in self._documents:
