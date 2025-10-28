@@ -11,6 +11,10 @@ import numpy as np
 from qdrant_client import QdrantClient
 
 
+_LEMMA_CACHE_ATTR = "_chatbot_lemma_cache"
+_LEMMA_CACHE_MAX_SIZE = 50000
+
+
 LOGGER = logging.getLogger("chatbot.rag")
 _WORD_PATTERN = re.compile(r"[а-яёa-z0-9]+")
 
@@ -27,14 +31,15 @@ class SearchResult:
 def normalize_text(text: str, morph) -> str:
     """Привести текст к леммам, устойчиво к сбоям морфологического анализа."""
 
+    cache = _ensure_lemma_cache(morph)
     lemmas: list[str] = []
     for word in _WORD_PATTERN.findall(text.lower()):
-        try:
-            parsed = morph.parse(word)
-        except Exception:  # pragma: no cover - страховка от редких сбоев pymorphy
-            parsed = None
-
-        lemma = parsed[0].normal_form if parsed else word
+        lemma = cache.get(word)
+        if lemma is None:
+            lemma = _lemmatize_word(word, morph)
+            if len(cache) >= _LEMMA_CACHE_MAX_SIZE:
+                cache.clear()
+            cache[word] = lemma
         lemmas.append(lemma)
 
     return " ".join(lemmas)
@@ -118,6 +123,23 @@ def search_all_collections(
             )
 
     return nlargest(limit, aggregated, key=lambda item: item.score)
+
+
+def _ensure_lemma_cache(morph) -> dict[str, str]:
+    cache = getattr(morph, _LEMMA_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(morph, _LEMMA_CACHE_ATTR, cache)
+    return cache
+
+
+def _lemmatize_word(word: str, morph) -> str:
+    try:
+        parsed = morph.parse(word)
+    except Exception:  # pragma: no cover - страховка от редких сбоев pymorphy
+        parsed = None
+
+    return parsed[0].normal_form if parsed else word
 
 
 __all__ = [
