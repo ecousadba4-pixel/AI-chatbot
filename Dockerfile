@@ -12,6 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
 
 ARG EMBEDDING_MODEL_NAME=d0rj/e5-base-en-ru
+ARG PRELOAD_EMBEDDINGS=true
 ENV EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
 
 WORKDIR /app
@@ -36,6 +37,12 @@ COPY . .
 
 # Устанавливаем проект как пакет, чтобы модули были доступны по импортам
 RUN pip install --no-cache-dir .
+
+RUN if [ "$PRELOAD_EMBEDDINGS" = "true" ]; then \
+        python tools/preload_model.py; \
+    else \
+        echo "Skipping embedding preload"; \
+    fi
 
 # Прогрев модели отключён: при необходимости можно выполнить tools/preload_model.py вручную
 
