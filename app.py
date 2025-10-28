@@ -127,6 +127,24 @@ def _build_context(results: list[SearchResult]) -> str:
     return "\n\n".join(result.text for result in results)
 
 
+def _perform_semantic_search(
+    container: AppContainer, normalized: str, *, limit: int
+) -> tuple[list[SearchResult], list[float], str]:
+    deps = container.dependencies
+    if deps.local_index is not None:
+        results, query_vector = deps.local_index.search(normalized, limit=limit)
+        return results, query_vector, "local"
+
+    query_embedding = encode(normalized, deps.embedding_model)
+    results = search_all_collections(
+        deps.qdrant,
+        container.collections,
+        query_embedding,
+        limit=limit,
+    )
+    return results, query_embedding, "qdrant"
+
+
 def _generate_response(container: AppContainer, context: str, question: str) -> str:
     deps = container.dependencies
     settings = container.settings
@@ -189,22 +207,34 @@ def _log_startup_information(container: AppContainer) -> None:
     settings = container.settings
     deps = container.dependencies
 
-    LOGGER.info(
-        "Connected to Qdrant at %s:%s (https=%s)",
-        settings.qdrant_host,
-        settings.qdrant_port,
-        settings.qdrant_https,
-    )
+    if deps.qdrant is not None:
+        LOGGER.info(
+            "Connected to Qdrant at %s:%s (https=%s)",
+            settings.qdrant_host,
+            settings.qdrant_port,
+            settings.qdrant_https,
+        )
+    elif deps.local_index is not None:
+        LOGGER.info(
+            "Qdrant недоступен, используется локальный индекс (%s коллекций)",
+            len(deps.local_index.collections),
+        )
     LOGGER.info(
         "Connected to Redis at %s:%s",
         settings.redis_host,
         settings.redis_port,
     )
-    LOGGER.info(
-        "Embedding dimension: %s",
-        deps.embedding_model.get_sentence_embedding_dimension(),
-    )
-    resolved_from = getattr(deps.embedding_model, "_resolved_from", settings.embedding_model)
+    embedding_dim = deps.embedding_model.get_sentence_embedding_dimension()
+    LOGGER.info("Embedding dimension: %s", embedding_dim)
+    if deps.local_index is not None:
+        resolved_from = "local_index"
+        LOGGER.info(
+            "Локальный индекс: %s документов", deps.local_index.document_count
+        )
+    else:
+        resolved_from = getattr(
+            deps.embedding_model, "_resolved_from", settings.embedding_model
+        )
     LOGGER.info("Источник модели эмбеддингов: %s", resolved_from)
     LOGGER.info(
         "Amvera GPT endpoint: %s (model=%s)",
@@ -224,11 +254,14 @@ def create_app(
 
     resolved_settings = settings or Settings.from_env()
     resolved_dependencies = dependencies or create_dependencies(resolved_settings)
-    collections = _filter_existing_collections(
-        resolved_dependencies.qdrant,
-        resolved_settings.default_collections,
-        resolved_settings.default_collections,
-    )
+    if resolved_dependencies.local_index is not None:
+        collections = resolved_dependencies.local_index.collections
+    else:
+        collections = _filter_existing_collections(
+            resolved_dependencies.qdrant,
+            resolved_settings.default_collections,
+            resolved_settings.default_collections,
+        )
 
     container = AppContainer(
         settings=resolved_settings,
@@ -283,16 +316,25 @@ def register_routes(app: Flask) -> None:
         normalized = normalize_text(question, deps.morph)
         LOGGER.debug("Нормализованный запрос: %s", normalized)
 
-        query_embedding = encode(normalized, deps.embedding_model)
-        LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
-
-        LOGGER.info("Поиск по коллекциям: %s", ", ".join(container.collections))
-        search_results = search_all_collections(
-            deps.qdrant,
-            container.collections,
-            query_embedding,
+        search_results, query_embedding, search_backend = _perform_semantic_search(
+            container,
+            normalized,
             limit=5,
         )
+
+        LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
+        if search_backend == "qdrant":
+            LOGGER.info(
+                "Поиск в Qdrant по коллекциям: %s",
+                ", ".join(container.collections),
+            )
+        else:
+            local_index = deps.local_index
+            document_count = local_index.document_count if local_index else 0
+            LOGGER.info(
+                "Поиск в локальном индексе (%s документов)",
+                document_count,
+            )
 
         if not search_results:
             LOGGER.info("Ничего не найдено ни в одной коллекции")
@@ -328,12 +370,20 @@ def register_routes(app: Flask) -> None:
                 "top_score": search_results[0].score,
                 "results_count": len(search_results),
                 "embedding_dim": len(query_embedding),
+                "search_backend": search_backend,
             },
         )
 
     @app.route("/api/debug/qdrant", methods=["GET"])
     def debug_qdrant() -> Any:
         container = _get_container()
+        if container.dependencies.qdrant is None:
+            return jsonify(
+                {
+                    "status": "disabled",
+                    "message": "Qdrant не используется, активирован локальный индекс",
+                }
+            )
         try:
             collections = container.dependencies.qdrant.get_collections().collections
         except Exception as exc:
@@ -368,11 +418,9 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "message required"}), 400
 
         normalized = normalize_text(question, deps.morph)
-        vector = encode(normalized, deps.embedding_model)
-        results = search_all_collections(
-            deps.qdrant,
-            container.collections,
-            vector,
+        results, vector, backend = _perform_semantic_search(
+            container,
+            normalized,
             limit=10,
         )
 
@@ -381,6 +429,7 @@ def register_routes(app: Flask) -> None:
                 "question": question,
                 "normalized": normalized,
                 "embedding_dim": len(vector),
+                "search_backend": backend,
                 "results": [
                     {
                         "collection": result.collection,
@@ -477,20 +526,26 @@ def register_routes(app: Flask) -> None:
 
         services_state: dict[str, Any] = {}
 
-        try:
-            deps.qdrant.get_collections()
+        if deps.qdrant is None:
             services_state["qdrant"] = {
-                "status": "ok",
-                "host": settings.qdrant_host,
-                "port": settings.qdrant_port,
+                "status": "disabled",
+                "message": "Используется локальный индекс",
             }
-        except Exception as exc:
-            services_state["qdrant"] = {
-                "status": "error",
-                "message": str(exc),
-                "host": settings.qdrant_host,
-                "port": settings.qdrant_port,
-            }
+        else:
+            try:
+                deps.qdrant.get_collections()
+                services_state["qdrant"] = {
+                    "status": "ok",
+                    "host": settings.qdrant_host,
+                    "port": settings.qdrant_port,
+                }
+            except Exception as exc:
+                services_state["qdrant"] = {
+                    "status": "error",
+                    "message": str(exc),
+                    "host": settings.qdrant_host,
+                    "port": settings.qdrant_port,
+                }
 
         try:
             deps.redis.ping()
@@ -511,6 +566,13 @@ def register_routes(app: Flask) -> None:
             services_state["embedding_model"] = {
                 "status": "ok",
                 "name": settings.embedding_model,
+                "source": getattr(
+                    deps.embedding_model,
+                    "_resolved_from",
+                    settings.embedding_model,
+                )
+                if deps.local_index is None
+                else "local_index",
                 "dimension": deps.embedding_model.get_sentence_embedding_dimension(),
             }
         except Exception as exc:
@@ -555,6 +617,7 @@ def register_routes(app: Flask) -> None:
                     "_resolved_from",
                     settings.embedding_model,
                 ),
+                "search_backend": "local" if deps.local_index else "qdrant",
                 "endpoints": _collect_public_endpoints(app),
             }
         )

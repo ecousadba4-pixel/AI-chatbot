@@ -36,23 +36,37 @@ def resolve_embedding_model(
         LOGGER.info("Модель эмбеддингов загружена из локального каталога")
         return model
 
-    cache_home = Path(os.getenv("SENTENCE_TRANSFORMERS_HOME") or "").expanduser()
+    cache_home = os.getenv("SENTENCE_TRANSFORMERS_HOME")
     if cache_home:
-        cached_path = cache_home / model_name.replace("/", "_")
-        if cached_path.exists():
-            LOGGER.info("Загружаем модель эмбеддингов из локального кэша: %s", cached_path)
-            try:
-                model = SentenceTransformer(str(cached_path), local_files_only=True)
-            except Exception as exc:  # pragma: no cover - зависит от содержимого кэша
-                LOGGER.warning(
-                    "Не удалось загрузить модель эмбеддингов из локального кэша %s: %s",
-                    cached_path,
-                    exc,
-                )
-            else:
-                setattr(model, "_resolved_from", str(cached_path))
-                LOGGER.info("Модель эмбеддингов загружена из локального кэша")
-                return model
+        LOGGER.info(
+            "Пробуем загрузить модель эмбеддингов '%s' из локального кэша: %s",
+            model_name,
+            cache_home,
+        )
+        try:
+            model = SentenceTransformer(
+                model_name,
+                cache_folder=cache_home,
+                local_files_only=True,
+            )
+        except OSError as exc:  # pragma: no cover - когда модели нет в кэше
+            LOGGER.warning(
+                "Не нашли модель '%s' в локальном кэше %s: %s",
+                model_name,
+                cache_home,
+                exc,
+            )
+        except Exception as exc:  # pragma: no cover - повреждённый кэш
+            LOGGER.warning(
+                "Не удалось загрузить модель '%s' из локального кэша %s: %s",
+                model_name,
+                cache_home,
+                exc,
+            )
+        else:
+            setattr(model, "_resolved_from", f"cache://{model_name}")
+            LOGGER.info("Модель эмбеддингов загружена из локального кэша")
+            return model
 
     if not allow_download:
         raise FileNotFoundError(
