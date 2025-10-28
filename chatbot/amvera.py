@@ -1,5 +1,4 @@
-"""Вспомогательные утилиты для работы с Amvera API."""
-
+"""Интеграция с Amvera GPT API."""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +9,7 @@ from typing import Any
 
 import requests
 
-from config import Settings
+from .config import Settings
 
 
 LOGGER = logging.getLogger("chatbot.amvera")
@@ -18,13 +17,13 @@ LOGGER = logging.getLogger("chatbot.amvera")
 
 @dataclass(slots=True)
 class AmveraError(Exception):
-    """Специальное исключение для ошибок Amvera API."""
+    """Исключение для ошибок Amvera API."""
 
     message: str
     status_code: int | None = None
     details: Any | None = None
 
-    def __str__(self) -> str:  # pragma: no cover - только для удобства логирования
+    def __str__(self) -> str:  # pragma: no cover - используется только при логировании
         return self.message
 
 
@@ -71,7 +70,9 @@ def build_payload(model: str | None, context: str, question: str) -> dict[str, A
     }
 
 
-def perform_request(settings: Settings, token: str, payload: dict[str, Any], *, timeout: float) -> requests.Response:
+def perform_request(
+    settings: Settings, token: str, payload: dict[str, Any], *, timeout: float
+) -> requests.Response:
     headers = build_headers(settings, token)
     return requests.post(settings.amvera_url, headers=headers, json=payload, timeout=timeout)
 

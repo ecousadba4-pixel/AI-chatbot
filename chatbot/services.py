@@ -1,4 +1,4 @@
-"""Инфраструктурные зависимости приложения."""
+"""Инициализация инфраструктурных зависимостей."""
 from __future__ import annotations
 
 import logging
@@ -10,9 +10,9 @@ import pymorphy3
 import redis
 from qdrant_client import QdrantClient
 
-from config import Settings
-from embedding_loader import resolve_embedding_model
-from local_index import LocalIndex
+from .config import Settings
+from .embedding_loader import resolve_embedding_model
+from .local_index import LocalIndex
 
 
 LOGGER = logging.getLogger("chatbot.services")
@@ -59,7 +59,8 @@ def create_dependencies(settings: Settings) -> Dependencies:
         embedding_model = local_index
         embedding_duration = perf_counter() - index_start
         LOGGER.info(
-            "Локальный индекс построен за %.2f с", embedding_duration
+            "Локальный индекс построен за %.2f с",
+            embedding_duration,
         )
     else:
         embedding_duration = perf_counter() - embedding_start

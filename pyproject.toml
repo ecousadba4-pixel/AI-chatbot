@@ -12,13 +12,9 @@ authors = [
 ]
 license = { text = "Proprietary" }
 
+[project.scripts]
+preload-embeddings = "chatbot.cli:preload_embeddings_main"
+
 [tool.setuptools]
-py-modules = [
-    "amvera",
-    "app",
-    "config",
-    "embedding_loader",
-    "price_dialog",
-    "rag",
-    "services"
-]
+packages = ["chatbot"]
+py-modules = ["app"]
