@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 
 
 def _get_env(name: str, *, required: bool = True) -> str | None:
@@ -105,6 +106,12 @@ class Settings:
             )
 
         embedding_model_path = os.getenv("EMBEDDING_MODEL_LOCAL_PATH") or None
+        if not embedding_model_path:
+            cache_home = os.getenv("SENTENCE_TRANSFORMERS_HOME")
+            if cache_home:
+                cache_candidate = Path(cache_home).expanduser() / embedding_model.replace("/", "_")
+                if cache_candidate.exists():
+                    embedding_model_path = str(cache_candidate)
 
         amvera_url = _get_env("AMVERA_GPT_URL")
         if amvera_url is None:
