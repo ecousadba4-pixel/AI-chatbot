@@ -1,13 +1,12 @@
-"""Preload the embedding model during container build."""
+"""Прогрев модели эмбеддингов во время сборки контейнера."""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 
 def _ensure_project_on_path() -> None:
-    """Добавить корень проекта в ``sys.path``."""
+    """Добавить корень проекта в ``sys.path`` для локального запуска скрипта."""
 
     project_root = Path(__file__).resolve().parent.parent
     project_root_str = str(project_root)
@@ -17,24 +16,8 @@ def _ensure_project_on_path() -> None:
 
 _ensure_project_on_path()
 
-from embedding_loader import resolve_embedding_model
+from chatbot.cli import preload_embeddings_main
 
 
-def main() -> None:
-    model_name = os.getenv("EMBEDDING_MODEL_NAME")
-    if not model_name:
-        raise RuntimeError(
-            "Переменная окружения EMBEDDING_MODEL_NAME должна быть установлена перед прогревом модели."
-        )
-    model = resolve_embedding_model(
-        model_name=model_name,
-        local_path=os.getenv("EMBEDDING_MODEL_LOCAL_PATH") or None,
-        allow_download=True,
-    )
-
-    # Run a dummy encode with e5-совместимыми префиксами, чтобы прогреть модель.
-    model.encode(["query: warmup", "passage: warmup"])
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover - скрипт запускается вручную
+    preload_embeddings_main()
