@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from heapq import nlargest
 import re
-from typing import Any, Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
-from qdrant_client import QdrantClient
 
 
 _LOGGER = logging.getLogger("chatbot.rag")
@@ -56,73 +54,6 @@ def encode(text: str, model) -> list[float]:
     raise TypeError("Модель эмбеддингов вернула неподдерживаемый тип вектора")
 
 
-def extract_payload_text(payload: dict[str, Any]) -> str:
-    """Извлечь человекочитаемый текст из payload Qdrant."""
-
-    text = payload.get("text") or payload.get("text_bm25")
-    if text:
-        return text
-
-    raw = payload.get("raw")
-    if isinstance(raw, dict):
-        text_blocks = raw.get("text_blocks")
-        if isinstance(text_blocks, dict):
-            combined = "\n".join(str(value) for value in text_blocks.values() if value)
-            if combined:
-                return combined
-
-        raw_text = raw.get("text")
-        if raw_text:
-            return raw_text
-
-        if raw.get("category") == "faq":
-            question = raw.get("question") or ""
-            answer = raw.get("answer") or ""
-            if question or answer:
-                return f"Вопрос: {question}\nОтвет: {answer}"
-
-    return ""
-
-
-def search_all_collections(
-    client: QdrantClient,
-    collections: Iterable[str],
-    query_embedding: Iterable[float],
-    *,
-    limit: int = 5,
-) -> list[SearchResult]:
-    """Поиск по нескольким коллекциям с агрегацией лучших результатов."""
-
-    embedding_vector = list(query_embedding)
-    aggregated: list[SearchResult] = []
-
-    for collection in collections:
-        try:
-            search_response = client.search(
-                collection_name=collection,
-                query_vector=embedding_vector,
-                limit=limit,
-            )
-        except Exception as exc:  # pragma: no cover - сетевые ошибки
-            _LOGGER.warning("Ошибка поиска в %s: %s", collection, exc)
-            continue
-
-        for hit in search_response:
-            payload = hit.payload or {}
-            text = extract_payload_text(payload)
-            if not text:
-                continue
-            aggregated.append(
-                SearchResult(
-                    collection=collection,
-                    score=hit.score,
-                    text=text,
-                )
-            )
-
-    return nlargest(limit, aggregated, key=lambda item: item.score)
-
-
 def _ensure_lemma_cache(morph) -> dict[str, str]:
     cache = getattr(morph, _LEMMA_CACHE_ATTR, None)
     if cache is None:
@@ -144,6 +75,4 @@ __all__ = [
     "SearchResult",
     "normalize_text",
     "encode",
-    "extract_payload_text",
-    "search_all_collections",
 ]

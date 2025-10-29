@@ -39,6 +39,15 @@ SHELTER_TOKEN_ENV = "SHELTER_TOKEN"
 SHELTER_TIMEOUT = 15
 DATE_FORMAT = "%Y-%m-%d"
 
+_SESSIONS: dict[str, "BookingSession"] = {}
+
+
+def _cleanup_expired_sessions(now: datetime) -> None:
+    for key, session in list(_SESSIONS.items()):
+        if (now - session.last_activity).total_seconds() > session._ttl_seconds:
+            _SESSIONS.pop(key, None)
+
+
 
 def _normalize_words(text: str, morph: pymorphy3.MorphAnalyzer) -> set[str]:
     tokens = re.findall(r"[а-яёa-z]+", text.lower())
@@ -52,19 +61,6 @@ def _normalize_words(text: str, morph: pymorphy3.MorphAnalyzer) -> set[str]:
     return lemmas
 
 
-def _load_session(redis_client: Any, key: str) -> dict[str, Any]:
-    raw = redis_client.get(key)
-    if not raw:
-        return {}
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        LOGGER.warning("Не удалось распарсить сохранённую сессию, создаём новую")
-        redis_client.delete(key)
-        return {}
-
-
 class DialogStep(IntEnum):
     INTENT_DETECTION = 0
     CHECKIN_DATE = 1
@@ -76,60 +72,31 @@ class DialogStep(IntEnum):
 @dataclass(slots=True)
 class BookingSession:
     user_id: str
-    redis_client: Any
     step: DialogStep = field(default=DialogStep.INTENT_DETECTION)
     info: dict[str, Any] = field(default_factory=dict)
     last_activity: datetime = field(default_factory=datetime.now)
 
     _ttl_seconds: int = field(default=3600, init=False, repr=False)
-    _redis_prefix: str = field(default="booking_session:", init=False, repr=False)
-
-    @property
-    def redis_key(self) -> str:
-        return f"{self._redis_prefix}{self.user_id}"
 
     @classmethod
-    def load(cls, user_id: str, redis_client: Any) -> "BookingSession":
-        stored = _load_session(redis_client, f"{cls._redis_prefix}{user_id}")
-        info_raw = stored.get("info")
-        info = info_raw if isinstance(info_raw, dict) else {}
-
-        last_activity_raw: Optional[str] = stored.get("last_activity")
-        if isinstance(last_activity_raw, str):
-            try:
-                last_activity = datetime.fromisoformat(last_activity_raw)
-            except ValueError:
-                last_activity = datetime.now()
-        else:
-            last_activity = datetime.now()
-
-        step_value = stored.get("step", DialogStep.INTENT_DETECTION)
-        try:
-            step = DialogStep(step_value)
-        except ValueError:
-            step = DialogStep.INTENT_DETECTION
-
-        return cls(
-            user_id=user_id,
-            redis_client=redis_client,
-            step=step,
-            info=info,
-            last_activity=last_activity,
-        )
+    def load(cls, user_id: str) -> "BookingSession":
+        now = datetime.now()
+        _cleanup_expired_sessions(now)
+        session = _SESSIONS.get(user_id)
+        if session is None:
+            session = cls(user_id=user_id)
+            _SESSIONS[user_id] = session
+        return session
 
     def touch(self) -> None:
         self.last_activity = datetime.now()
 
     def save(self) -> None:
-        payload = {
-            "step": int(self.step),
-            "info": self.info,
-            "last_activity": self.last_activity.isoformat(),
-        }
-        self.redis_client.setex(self.redis_key, self._ttl_seconds, json.dumps(payload))
+        self.last_activity = datetime.now()
+        _SESSIONS[self.user_id] = self
 
     def delete(self) -> None:
-        self.redis_client.delete(self.redis_key)
+        _SESSIONS.pop(self.user_id, None)
 
 
 def parse_natural_date(user_input: str) -> tuple[Optional[datetime], Optional[int]]:
@@ -370,12 +337,11 @@ class BookingDialog:
         self,
         user_id: str,
         user_input: str,
-        redis_client: Any,
         morph: pymorphy3.MorphAnalyzer,
     ) -> None:
         self.text = user_input.strip()
         self.morph = morph
-        self.session = BookingSession.load(user_id=user_id, redis_client=redis_client)
+        self.session = BookingSession.load(user_id=user_id)
         self.session.touch()
 
     def _respond(self, message: str) -> dict[str, str]:
@@ -559,16 +525,18 @@ class BookingDialog:
 def handle_price_dialog(
     user_id: str,
     user_input: str,
-    redis_client: Any,
     morph: pymorphy3.MorphAnalyzer,
 ) -> Optional[dict[str, str]]:
     dialog = BookingDialog(
         user_id=user_id,
         user_input=user_input,
-        redis_client=redis_client,
         morph=morph,
     )
     return dialog.handle()
+
+
+def clear_booking_session(user_id: str) -> None:
+    _SESSIONS.pop(user_id, None)
 
 
 __all__ = [
@@ -576,6 +544,7 @@ __all__ = [
     "BookingSession",
     "ShelterVariant",
     "handle_price_dialog",
+    "clear_booking_session",
     "get_room_price_from_shelter",
     "parse_natural_date",
     "validate_dates",

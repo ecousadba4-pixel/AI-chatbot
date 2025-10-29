@@ -45,7 +45,7 @@ worker_class = "sync"
 # Максимальное количество одновременных запросов на worker
 threads = 2
 
-# Timeout для долгих запросов (важно для GPT и Qdrant)
+# Timeout для долгих запросов (важно для GPT и интеграций с внешними сервисами)
 timeout = 180
 
 # Graceful timeout при перезапуске

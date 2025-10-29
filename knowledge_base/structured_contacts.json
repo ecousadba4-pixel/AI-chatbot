@@ -1,0 +1,118 @@
+[
+  {
+    "id": "contacts:booking",
+    "category": "contacts",
+    "contact_type": "booking",
+    "title": "Контакты для бронирования",
+    "phone": "+7 (925) 55-33-700",
+    "phones": [
+      "+7 (925) 55-33-700"
+    ],
+    "phones_norm": [
+      "+79255533700"
+    ],
+    "hours": "09:00-21:00",
+    "opening_hours": "09:00-21:00",
+    "whatsapp": true,
+    "links": [],
+    "geo": null,
+    "text": "По вопросам бронирования номера или уже сделанным бронированиям звоните по номеру +7 (925) 55-33-700. Часы: 09:00-21:00",
+    "keywords": [
+      "booking",
+      "whatsapp",
+      "бронирование",
+      "контакты",
+      "телефон"
+    ],
+    "source": "Наши контакты"
+  },
+  {
+    "id": "contacts:reception",
+    "category": "contacts",
+    "contact_type": "reception",
+    "title": "Телефон ресепшена",
+    "phone": "+7 (926) 469-96-86",
+    "phones": [
+      "+7 (926) 469-96-86"
+    ],
+    "phones_norm": [
+      "+79264699686"
+    ],
+    "hours": "09:00-21:00",
+    "opening_hours": "09:00-21:00",
+    "whatsapp": false,
+    "links": [],
+    "geo": null,
+    "text": "Телефон Ресепшена +7 (926) 469-96-86. Часы: 09:00-21:00",
+    "keywords": [
+      "reception",
+      "контакты",
+      "ресепшен",
+      "телефон"
+    ],
+    "source": "Наши контакты"
+  },
+  {
+    "id": "contacts:restaurant",
+    "category": "contacts",
+    "contact_type": "restaurant",
+    "title": "Телефон ресторана",
+    "phone": "+7 (925) 636-22-70",
+    "phones": [
+      "+7 (925) 636-22-70"
+    ],
+    "phones_norm": [
+      "+79256362270"
+    ],
+    "hours": "09:00-21:00",
+    "opening_hours": "09:00-21:00",
+    "whatsapp": false,
+    "links": [
+      "https://instagram.com/usadba4seasons/",
+      "https://t.me/usadba4seasons"
+    ],
+    "geo": null,
+    "text": "Номер телефона ресторана +7 (925) 636-22-70, звонить можно в часы работы ресторана. Часы: 09:00-21:00",
+    "keywords": [
+      "restaurant",
+      "контакты",
+      "ресторан",
+      "телефон"
+    ],
+    "source": "Наши контакты"
+  },
+  {
+    "id": "contacts:social",
+    "category": "contacts",
+    "contact_type": "social",
+    "title": "Социальные сети",
+    "links": [
+      "https://instagram.com/usadba4seasons/",
+      "https://t.me/usadba4seasons"
+    ],
+    "text": "https://instagram.com/usadba4seasons/ ; https://t.me/usadba4seasons",
+    "keywords": [
+      "instagram",
+      "telegram",
+      "соцсети"
+    ],
+    "source": "Наши контакты"
+  },
+  {
+    "id": "contacts:directions_car",
+    "category": "contacts",
+    "contact_type": "directions",
+    "title": "Как добраться на машине",
+    "links": [],
+    "geo": null,
+    "text": "Из Москвы лучше всего выезжать по платной дороге от ул. Молодогвардейская, либо сразу по Минскому шоссе. Далее едете по Минскому шоссе до 108-го км, на светофоре налево (указатель дер. Борисово), далее дер. Заречье, сразу за ней не пропустите поворот направо (указатель «Андреевское»), через 2 км дер. Бараново и через 1 км указатель направо «Власово 0.1», поворачивайте направо и через 300 м справа коричневый забор и Усадьба. Яндекс Навигатор хорошо знает нашу локацию и корректно ведет маршрут до нас, для удобства можете в Яндекс навигаторе набрать в поиске Усадьба Четыре Сезона.",
+    "keywords": [
+      "как добраться",
+      "машина",
+      "маршрут",
+      "навигатор",
+      "яндекс"
+    ],
+    "source": "Наши контакты"
+  }
+]

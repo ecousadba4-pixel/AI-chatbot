@@ -1,11 +1,9 @@
 flask
 flask-cors
 requests
-qdrant-client
 sentence-transformers
 python-dateutil
 gunicorn
-redis
 pymorphy3
 pymorphy3-dicts-ru
 numpy

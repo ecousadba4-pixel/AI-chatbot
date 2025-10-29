@@ -1,7 +1,6 @@
 """Интеграция с Amvera GPT API."""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -113,10 +112,6 @@ def extract_answer(data: dict[str, Any]) -> str:
     raise AmveraError("Не удалось извлечь текст ответа из ответа модели")
 
 
-def cache_key(context: str, question: str) -> str:
-    return hashlib.md5(f"{question}:{context}".encode()).hexdigest()
-
-
 __all__ = [
     "AmveraError",
     "normalize_token",
@@ -126,5 +121,4 @@ __all__ = [
     "perform_request",
     "log_error",
     "extract_answer",
-    "cache_key",
 ]
