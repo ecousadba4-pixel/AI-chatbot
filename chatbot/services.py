@@ -7,8 +7,6 @@ from pathlib import Path
 from time import perf_counter
 
 import pymorphy3
-import redis
-from qdrant_client import QdrantClient
 
 from .config import Settings
 from .embedding_loader import resolve_embedding_model
@@ -22,8 +20,6 @@ LOGGER = logging.getLogger("chatbot.services")
 class Dependencies:
     """Собранные сервисы для работы приложения."""
 
-    qdrant: QdrantClient | None
-    redis: redis.Redis
     morph: pymorphy3.MorphAnalyzer
     embedding_model: object
     local_index: LocalIndex | None
@@ -37,7 +33,7 @@ def create_dependencies(settings: Settings) -> Dependencies:
     morph_duration = perf_counter() - morph_start
     LOGGER.info("Создание MorphAnalyzer заняло %.2f с", morph_duration)
 
-    local_index: LocalIndex | None = None
+    embedding_model: object | None = None
     embedding_start = perf_counter()
     try:
         embedding_model = resolve_embedding_model(
@@ -47,46 +43,39 @@ def create_dependencies(settings: Settings) -> Dependencies:
         )
     except Exception as exc:  # pragma: no cover - зависит от окружения
         LOGGER.warning(
-            "Не удалось загрузить модель эмбеддингов '%s': %s. Включаем локальный поиск.",
+            "Не удалось загрузить модель эмбеддингов '%s': %s",
             settings.embedding_model,
             exc,
-        )
-        index_start = perf_counter()
-        local_index = LocalIndex.from_directory(
-            Path(settings.local_knowledge_base_path),
-            morph_analyzer,
-        )
-        embedding_model = local_index
-        embedding_duration = perf_counter() - index_start
-        LOGGER.info(
-            "Локальный индекс построен за %.2f с",
-            embedding_duration,
         )
     else:
         embedding_duration = perf_counter() - embedding_start
         LOGGER.info("Загрузка модели эмбеддингов заняла %.2f с", embedding_duration)
 
-    qdrant_client: QdrantClient | None = None
-    if local_index is None:
-        qdrant_start = perf_counter()
-        qdrant_client = QdrantClient(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            api_key=settings.qdrant_api_key or None,
-            https=settings.qdrant_https,
+    local_index: LocalIndex | None = None
+    index_start = perf_counter()
+    try:
+        local_index = LocalIndex.from_directory(
+            Path(settings.local_knowledge_base_path),
+            morph_analyzer,
         )
-        qdrant_duration = perf_counter() - qdrant_start
-        LOGGER.info("Инициализация клиента Qdrant заняла %.2f с", qdrant_duration)
+    except Exception as exc:  # pragma: no cover - зависит от окружения
+        LOGGER.warning(
+            "Не удалось построить локальный индекс из '%s': %s",
+            settings.local_knowledge_base_path,
+            exc,
+        )
+    else:
+        embedding_duration = perf_counter() - index_start
+        LOGGER.info("Локальный индекс построен за %.2f с", embedding_duration)
 
-    redis_client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        decode_responses=True,
-    )
+    if embedding_model is None:
+        if local_index is None:
+            raise RuntimeError(
+                "Не удалось инициализировать модель эмбеддингов или локальный индекс."
+            )
+        embedding_model = local_index
 
     return Dependencies(
-        qdrant=qdrant_client,
-        redis=redis_client,
         morph=morph_analyzer,
         embedding_model=embedding_model,
         local_index=local_index,

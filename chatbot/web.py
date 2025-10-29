@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 import requests
 from flask import Flask, current_app, jsonify, request
@@ -13,15 +13,14 @@ from flask_cors import CORS
 from .amvera import (
     AmveraError,
     build_payload,
-    cache_key,
     ensure_token,
     extract_answer,
     log_error,
     perform_request,
 )
 from .config import Settings
-from .price_dialog import handle_price_dialog
-from .rag import SearchResult, encode, normalize_text, search_all_collections
+from .price_dialog import clear_booking_session, handle_price_dialog
+from .rag import SearchResult, normalize_text
 from .services import Dependencies, create_dependencies
 
 
@@ -53,38 +52,6 @@ def configure_logging() -> None:
     )
 
 
-def _filter_existing_collections(
-    client: Any, requested: Iterable[str], fallback: Iterable[str]
-) -> tuple[str, ...]:
-    try:
-        response = client.get_collections()
-        available = {collection.name for collection in response.collections}
-    except Exception as exc:  # pragma: no cover - сетевой сбой
-        LOGGER.warning("Не удалось получить список коллекций из Qdrant: %s", exc)
-        return tuple(requested)
-
-    if not available:
-        LOGGER.warning("В Qdrant не найдено ни одной коллекции")
-        return tuple(requested)
-
-    requested_list = list(dict.fromkeys(requested))
-    filtered = [name for name in requested_list if name in available]
-    if filtered:
-        missing = sorted(name for name in requested_list if name not in available)
-        if missing:
-            LOGGER.warning("Пропускаем отсутствующие коллекции: %s", ", ".join(missing))
-        return tuple(filtered)
-
-    fallback_candidates = [name for name in fallback if name in available]
-    if not fallback_candidates:
-        fallback_candidates = sorted(available)
-    LOGGER.warning(
-        "Ни одна из запрошенных коллекций не найдена. Используем fallback: %s",
-        ", ".join(fallback_candidates),
-    )
-    return tuple(fallback_candidates)
-
-
 def _collect_public_endpoints(app: Flask) -> list[str]:
     collected: dict[str, None] = {}
     for rule in app.url_map.iter_rules():
@@ -94,8 +61,6 @@ def _collect_public_endpoints(app: Flask) -> list[str]:
 
     default_order = [
         "/api/chat",
-        "/api/debug/qdrant",
-        "/api/debug/redis",
         "/api/debug/search",
         "/api/debug/amvera",
         "/api/debug/model",
@@ -148,7 +113,6 @@ class ChatResponder:
         booking_result = handle_price_dialog(
             session_id,
             question,
-            self.container.dependencies.redis,
             self.container.dependencies.morph,
         )
         if booking_result:
@@ -164,18 +128,15 @@ class ChatResponder:
         )
 
         LOGGER.debug("Размер эмбеддинга запроса: %s", len(query_embedding))
-        if backend == "qdrant":
-            LOGGER.info(
-                "Поиск в Qdrant по коллекциям: %s",
-                ", ".join(self.container.collections),
-            )
-        else:
+        if backend == "local":
             local_index = self.container.dependencies.local_index
             document_count = local_index.document_count if local_index else 0
             LOGGER.info(
                 "Поиск в локальном индексе (%s документов)",
                 document_count,
             )
+        else:
+            LOGGER.warning("Локальный поиск недоступен")
 
         if not search_results:
             LOGGER.info("Ничего не найдено ни в одной коллекции")
@@ -188,7 +149,7 @@ class ChatResponder:
 
         context = _build_context(search_results[:3])
         if not context.strip():
-            LOGGER.warning("Контекст пуст после извлечения payload['text']")
+            LOGGER.warning("Контекст пуст после поиска по базе знаний")
             return ChatResponse(
                 "Извините, не удалось сформировать ответ. "
                 "Попробуйте переформулировать вопрос.",
@@ -214,30 +175,16 @@ class ChatResponder:
     def perform_semantic_search(
         self, normalized: str, *, limit: int
     ) -> tuple[list[SearchResult], list[float], str]:
-        deps = self.container.dependencies
-        if deps.local_index is not None:
-            results, query_vector = deps.local_index.search(normalized, limit=limit)
-            return results, query_vector, "local"
+        local_index = self.container.dependencies.local_index
+        if local_index is None:
+            LOGGER.warning("Локальный индекс недоступен, поиск отключён")
+            return [], [], "disabled"
 
-        query_embedding = encode(normalized, deps.embedding_model)
-        results = search_all_collections(
-            deps.qdrant,
-            self.container.collections,
-            query_embedding,
-            limit=limit,
-        )
-        return results, query_embedding, "qdrant"
+        results, query_vector = local_index.search(normalized, limit=limit)
+        return results, query_vector, "local"
 
     def _generate_response(self, context: str, question: str) -> str:
-        deps = self.container.dependencies
         settings = self.container.settings
-
-        redis_key = cache_key(context, question)
-
-        cached = deps.redis.get(redis_key)
-        if cached:
-            LOGGER.info("Ответ для вопроса %s получен из кэша Redis", question)
-            return cached
 
         try:
             token = ensure_token(settings)
@@ -269,22 +216,10 @@ class ChatResponder:
             LOGGER.warning("%s", exc)
             return ERROR_MESSAGE
 
-        try:
-            deps.redis.setex(redis_key, 3600, answer)
-        except Exception as exc:  # pragma: no cover - сбой Redis не критичен
-            LOGGER.warning("Не удалось сохранить ответ в Redis: %s", exc)
-        else:
-            LOGGER.debug("Ответ сохранён в кэш Redis под ключом %s", redis_key)
-
         return answer
 
     def _clear_booking_session(self, session_id: str) -> None:
-        try:
-            self.container.dependencies.redis.delete(
-                f"booking_session:{session_id}"
-            )
-        except Exception as exc:  # pragma: no cover - сбой Redis не критичен
-            LOGGER.warning("Не удалось очистить сессию бронирования: %s", exc)
+        clear_booking_session(session_id)
 
 
 def _get_container() -> AppContainer:
@@ -298,33 +233,31 @@ def _log_startup_information(container: AppContainer) -> None:
     settings = container.settings
     deps = container.dependencies
 
-    if deps.qdrant is not None:
+    local_index = deps.local_index
+    if local_index is not None:
         LOGGER.info(
-            "Connected to Qdrant at %s:%s (https=%s)",
-            settings.qdrant_host,
-            settings.qdrant_port,
-            settings.qdrant_https,
-        )
-    elif deps.local_index is not None:
-        LOGGER.info(
-            "Qdrant недоступен, используется локальный индекс (%s коллекций)",
-            len(deps.local_index.collections),
-        )
-    LOGGER.info(
-        "Connected to Redis at %s:%s",
-        settings.redis_host,
-        settings.redis_port,
-    )
-    embedding_dim = deps.embedding_model.get_sentence_embedding_dimension()
-    LOGGER.info("Embedding dimension: %s", embedding_dim)
-    if deps.local_index is not None:
-        resolved_from = "local_index"
-        LOGGER.info(
-            "Локальный индекс: %s документов", deps.local_index.document_count
+            "Локальный индекс загружен: %s документов, %s коллекций",
+            local_index.document_count,
+            len(local_index.collections),
         )
     else:
+        LOGGER.warning("Локальный индекс недоступен, поиск по базе знаний отключён")
+
+    embedding_model = deps.embedding_model
+    try:
+        embedding_dim = embedding_model.get_sentence_embedding_dimension()
+    except Exception as exc:  # pragma: no cover - зависит от реализации модели
+        LOGGER.warning("Не удалось получить размер эмбеддинга: %s", exc)
+    else:
+        LOGGER.info("Embedding dimension: %s", embedding_dim)
+
+    if local_index is not None and embedding_model is local_index:
+        resolved_from = "local_index"
+    else:
         resolved_from = getattr(
-            deps.embedding_model, "_resolved_from", settings.embedding_model
+            embedding_model,
+            "_resolved_from",
+            settings.embedding_model,
         )
     LOGGER.info("Источник модели эмбеддингов: %s", resolved_from)
     LOGGER.info(
@@ -348,11 +281,7 @@ def create_app(
     if resolved_dependencies.local_index is not None:
         collections = resolved_dependencies.local_index.collections
     else:
-        collections = _filter_existing_collections(
-            resolved_dependencies.qdrant,
-            resolved_settings.default_collections,
-            resolved_settings.default_collections,
-        )
+        collections = ()
 
     container = AppContainer(
         settings=resolved_settings,
@@ -386,38 +315,6 @@ def register_routes(app: Flask) -> None:
         responder = ChatResponder(container)
         response = responder.handle(session_id, question)
         return _json_reply(session_id, response.message, **response.extra)
-
-    @app.route("/api/debug/qdrant", methods=["GET"])
-    def debug_qdrant() -> Any:
-        container = _get_container()
-        if container.dependencies.qdrant is None:
-            return jsonify(
-                {
-                    "status": "disabled",
-                    "message": "Qdrant не используется, активирован локальный индекс",
-                }
-            )
-        try:
-            collections = container.dependencies.qdrant.get_collections().collections
-        except Exception as exc:
-            return jsonify({"status": "error", "message": str(exc)})
-
-        return jsonify(
-            {
-                "status": "ok",
-                "collections": [collection.name for collection in collections],
-            }
-        )
-
-    @app.route("/api/debug/redis", methods=["GET"])
-    def debug_redis() -> Any:
-        container = _get_container()
-        try:
-            container.dependencies.redis.ping()
-        except Exception as exc:
-            return jsonify({"status": "error", "message": str(exc)})
-
-        return jsonify({"status": "ok", "message": "Redis connection active"})
 
     @app.route("/api/debug/search", methods=["POST"])
     def debug_search() -> Any:
@@ -538,54 +435,35 @@ def register_routes(app: Flask) -> None:
 
         services_state: dict[str, Any] = {}
 
-        if deps.qdrant is None:
-            services_state["qdrant"] = {
-                "status": "disabled",
-                "message": "Используется локальный индекс",
+        local_index = deps.local_index
+        if local_index is not None:
+            services_state["local_index"] = {
+                "status": "ok",
+                "documents": local_index.document_count,
+                "collections": list(local_index.collections),
             }
         else:
-            try:
-                deps.qdrant.get_collections()
-                services_state["qdrant"] = {
-                    "status": "ok",
-                    "host": settings.qdrant_host,
-                    "port": settings.qdrant_port,
-                }
-            except Exception as exc:
-                services_state["qdrant"] = {
-                    "status": "error",
-                    "message": str(exc),
-                    "host": settings.qdrant_host,
-                    "port": settings.qdrant_port,
-                }
-
-        try:
-            deps.redis.ping()
-            services_state["redis"] = {
-                "status": "ok",
-                "host": settings.redis_host,
-                "port": settings.redis_port,
-            }
-        except Exception as exc:
-            services_state["redis"] = {
-                "status": "error",
-                "message": str(exc),
-                "host": settings.redis_host,
-                "port": settings.redis_port,
+            services_state["local_index"] = {
+                "status": "disabled",
+                "message": "Локальный индекс недоступен",
             }
 
         try:
-            services_state["embedding_model"] = {
-                "status": "ok",
-                "name": settings.embedding_model,
-                "source": getattr(
+            dimension = deps.embedding_model.get_sentence_embedding_dimension()
+            source = (
+                "local_index"
+                if local_index is not None and deps.embedding_model is local_index
+                else getattr(
                     deps.embedding_model,
                     "_resolved_from",
                     settings.embedding_model,
                 )
-                if deps.local_index is None
-                else "local_index",
-                "dimension": deps.embedding_model.get_sentence_embedding_dimension(),
+            )
+            services_state["embedding_model"] = {
+                "status": "ok",
+                "name": settings.embedding_model,
+                "source": source,
+                "dimension": dimension,
             }
         except Exception as exc:
             services_state["embedding_model"] = {
@@ -621,7 +499,7 @@ def register_routes(app: Flask) -> None:
                 "status": "ok",
                 "message": "Усадьба 'Четыре Сезона' - AI Assistant",
                 "version": "4.0",
-                "features": ["RAG", "Booking Dialog", "Redis Cache"],
+                "features": ["RAG", "Booking Dialog"],
                 "embedding_model": settings.embedding_model,
                 "embedding_dim": deps.embedding_model.get_sentence_embedding_dimension(),
                 "embedding_source": getattr(
@@ -629,7 +507,7 @@ def register_routes(app: Flask) -> None:
                     "_resolved_from",
                     settings.embedding_model,
                 ),
-                "search_backend": "local" if deps.local_index else "qdrant",
+                "search_backend": "local" if deps.local_index else "disabled",
                 "endpoints": _collect_public_endpoints(app),
             }
         )

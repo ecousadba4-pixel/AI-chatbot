@@ -2,5 +2,3 @@
 *.json
 *.docx
 
-# Ignore local Qdrant database directory
-Qdrant DB/
